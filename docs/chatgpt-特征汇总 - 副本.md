@@ -200,73 +200,73 @@ $$
 
 ## 4. 汇总表
 
-| 序号 | 名称 | 符号 | 分类 | 物理意义（关键词） | 程序变量名 | 计算公式 |
-|---|---|---|---|---|---|---|
-| 1 | 包络峰位比 | $r_p$ | 时间/包络 | 峰值早晚、前移程度 | `r_p` | $r_p=\dfrac{t_p-t_{on}}{t_{off}-t_{on}}$ |
-| 2 | 能量质心位置 | $C_E$ | 时间/包络 | 能量前后偏置、重心位置 | `C_E` | $C_E=\dfrac{\sum_t t\,e^2(t)}{\sum_t e^2(t)}$ |
-| 3 | 包络不对称度 | $A_{\text{env}}$ | 时间/包络 | 早峰拖尾、快起慢衰 | `A_env` | $A_{\text{env}}=\dfrac{(t_{off}-t_p)-(t_p-t_{on})}{t_{off}-t_{on}}$ |
-| 4 | 包络对称性 | $S_{\text{env}}$ | 时间/包络 | 左右镜像相似、鼓包程度 | `S_env` | $S_{\text{env}}=\mathrm{corr}(e,e^{rev})$ |
-| 5 | 包络偏度 | $Sk_{\text{env}}$ | 时间/包络 | 拖尾偏斜、偏态 | `Sk_env` | $Sk_{\text{env}}=\dfrac{1}{N}\sum\dfrac{(e_i-\mu_e)^3}{\sigma_e^3}$ |
-| 6 | 上升下降时间比 | $R_{td}$ | 时间/包络 | 快起慢衰 | `R_td` | $R_{td}=\dfrac{T_{\text{decay}}}{T_{\text{rise}}}$ |
-| 7 | 前后能量比 | $R_{fb}$ | 时间/包络 | 峰前峰后能量不均衡 | `R_fb` | $R_{fb}=\dfrac{E_{\text{before}}}{E_{\text{after}}}$ |
-| 8 | 鼓包集中度 | $C_{\text{bulge}}$ | 时间/包络 | 鼓包主体占比 | `C_bulge` | $C_{\text{bulge}}=\dfrac{T_\eta}{T}$ |
-| 9 | 局部鼓包个数 | $N_{\text{bulge}}$ | 时间/包络 | 多鼓包背景复杂度 | `N_bulge` | $N_{\text{bulge}}=\#\{\text{满足阈值与最小间隔约束的鼓包}\}$ |
-| 10 | 包络拟合误差 | $\varepsilon_{\text{env}}$ | 时间/包络 | 偏离标准鼓包 | `epsilon_env` | $\varepsilon_{\text{env}}=\dfrac{\lVert e-\hat e\rVert_2}{\lVert e\rVert_2}$ |
-| 11 | 包络左右宽度比 | $\eta_{\text{bw}}$ | 时间/包络 | 左右展宽对称性 | `eta_bw` | $\eta_{\text{bw}}=\dfrac{t_{95}-t_p}{t_p-t_{05}}$ |
-| 12 | 谱质心 | $SC(t)$ | 时频演化 | 频谱中心位置 | `SC_mean` | $SC(t)=\dfrac{\sum_f fP(t,f)}{\sum_f P(t,f)}$ |
-| 13 | 谱质心衰减斜率 | $k_{sc}$ | 时频演化 | 高频向低频迁移速度 | `k_sc` | $SC(t)\approx k_{sc}t+b_{sc}$ |
-| 14 | 高频低频能量比 | $R_{hl}(t)$ | 能量/时频 | 高频占比 | `R_hl_mean` | $R_{hl}(t)=\dfrac{E_{\text{high}}(t)}{E_{\text{low}}(t)+\varepsilon}$ |
-| 15 | 高频低频能量比斜率 | $k_{hl}$ | 能量/时频 | 高频衰减速度 | `k_hl` | $R_{hl}(t)\approx k_{hl}t+b_{hl}$ |
-| 16 | 高频衰减斜率 | $\beta_H$ | 能量/时频 | 峰后高频衰减 | `beta_H` | $\log(E_H(t)+\varepsilon)\approx \beta_H t+b_H$ |
-| 17 | 时频熵 | $H_{tf}$ | 时频演化 | 能量分散度 | `H_tf` | $H_{tf}=-\sum p_{ij}\ln p_{ij}$ |
-| 18 | 频谱平坦度 | $SF$ | 频域 | 谱平坦/尖峰程度 | `SF` | $SF=\dfrac{\exp(\frac1K\sum \ln P_k)}{\frac1K\sum P_k}$ |
-| 19 | Renyi 熵 | $H_\alpha$ | 时频演化 | 集中度/复杂度 | `H_alpha` | $H_\alpha=\dfrac{1}{1-\alpha}\log\sum p_{tf}^{\alpha}$ |
-| 20 | 主脊线连续率 | $\rho_r$ | 谐波/脊线 | 主结构连续性 | `rho_r` | $\rho_r=\dfrac{L_{\text{valid}}}{L_{\text{all}}}$ |
-| 21 | 脊线缺口率 | $G_{\text{gap}}$ | 谐波/脊线 | 中断破坏程度 | `G_gap` | $G_{\text{gap}}=\dfrac{N_{\text{gap}}}{L_{\text{all}}}$ |
-| 22 | 脊线拟合优度 | $R^2_{\text{ridge}}$ | 谐波/脊线 | 主频轨迹可建模性 | `R2_ridge` | $R^2(f_1,\hat f_1)$ |
-| 23 | 拱形轨迹分数 | $S_{\text{arch}}$ | 谐波/脊线 | 先升后降拱形趋势 | `S_arch` | $S_{\text{arch}}=R^2(f_1,q)\mathbf1(a<0)\mathbf1(t_v\in[0.2T,0.8T])$ |
-| 24 | 二倍频存在度 | $H2_{\text{ratio}}$ | 二倍频/谐波 | 2:1 关系出现频率 | `H2_ratio` | $H2_{\text{ratio}}=\dfrac{N\{\lvert f_2-2f_1\rvert<\Delta f\}}{N_{\text{active}}}$ |
-| 25 | 二倍频比 | $R_{2:1}$ | 二倍频/谐波 | 二倍频能量强度 | `R_2_1` | $R_{2:1}=\dfrac{\sum_t E(t,2f_1\pm\Delta f)}{\sum_t E(t,f_1\pm\Delta f)+\varepsilon}$ |
-| 26 | 谐波栈能量比 | $H_{\text{stack}}$ | 二倍频/谐波 | 多谐波组织程度 | `H_stack` | $H_{\text{stack}}=\dfrac{\sum_t\sum_{m=1}^M E(t,mf_1\pm\Delta f)}{\sum_{t,f}S(t,f)}$ |
-| 27 | 谐波能量比 | $R_h$ | 二倍频/谐波 | 二倍频/基频强度比 | `R_h` | $R_h=\dfrac{E_{2nd}}{E_{1st}}$ |
-| 28 | 二倍频一致性误差 | $\varepsilon_{2\times}$ | 二倍频/谐波 | 偏离 2:1 程度 | `epsilon_2x` | $\varepsilon_{2\times}=\mathrm{median}\!\left(\dfrac{\lvert f_2-2f_1\rvert}{f_1}\right)$ |
-| 29 | 谐波一致性误差 | $C_h$ | 二倍频/谐波 | 二倍频跟随误差 | `C_h` | $C_h=\mathrm{mean}(\lvert f_2-2f_1\rvert)$ |
-| 30 | 谐波能量占比 | $R_{\text{harm}}$ | 二倍频/谐波 | 主谐波可解释占比 | `R_harm` | $R_{\text{harm}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ |
-| 31 | 脊线连续性 | $Ridge_{\text{coh}}$ | 二倍频/谐波 | 谐波掩膜内能量占比 | `Ridge_coh` | $Ridge_{\text{coh}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ |
-| 32 | 上升帧占比 | $\rho_{up}$ | 脊线演化 | 上升段占比 | `rho_up` | $\rho_{up}=\dfrac{N\{df_1/dt>\tau_s\}}{N_{\text{active}}}$ |
-| 33 | 下降帧占比 | $\rho_{down}$ | 脊线演化 | 下降段占比 | `rho_down` | $\rho_{down}=\dfrac{N\{df_1/dt<-\tau_s\}}{N_{\text{active}}}$ |
-| 34 | 转折次数 | $N_{\text{turn}}$ | 脊线演化 | 拐点/多鼓包复杂度 | `N_turn` | $N_{\text{turn}}=N\{\mathrm{sign}(df_1/dt)\text{变化}\}$ |
-| 35 | 频率跨度 | $\Delta f_{\text{span}}$ | 脊线演化 | 基频摆动范围 | `Delta_f_span` | $\Delta f_{\text{span}}=\max(f_1)-\min(f_1)$ |
-| 36 | 归一化曲率 | $C_f$ | 脊线演化 | 弯曲程度 | `C_f` | $C_f=\mathrm{mean}\!\left(\left\lvert\dfrac{d^2f_1}{dt^2}\right\rvert\right)$ |
-| 37 | 谐波可解释能量 | $E_{\text{harm}}$ | 残差/背景扣除 | 可由流噪声解释的能量 | `E_harm` | $E_{\text{harm}}=\sum M_hP$ |
-| 38 | 残差能量 | $E_{\text{res}}$ | 残差/背景扣除 | 未解释异常能量 | `E_res` | $E_{\text{res}}=E_{\text{total}}-E_{\text{harm}}$ |
-| 39 | 非谐波残差占比 | $\rho_{\text{res}}$ | 残差/背景扣除 | 异常残差占比 | `rho_res` | $\rho_{\text{res}}=\dfrac{E_{\text{res}}}{E_{\text{total}}}$ |
-| 40 | 高频残差占比 | $R_{\text{high,res}}$ | 残差/背景扣除 | 高频异常强度 | `R_high_res` | $R_{\text{high,res}}=\dfrac{E_{\text{res,high}}}{E_{\text{total}}}$ |
-| 41 | 流噪声重构误差 | $\varepsilon_{\text{rec}}$ | 残差/背景扣除 | 主结构失配 | `epsilon_rec` | $\varepsilon_{\text{rec}}=\dfrac{\lVert x-\hat x_f\rVert_2^2}{\lVert x\rVert_2^2}$ |
-| 42 | 异常子窗个数 | $N_{\text{abn}}$ | 残差/背景扣除 | 异常出现次数 | `N_abn` | $N_{\text{abn}}=N\{\rho_{\text{res}}^{(m)}>\tau_{\text{res}}\}$ |
-| 43 | 谱流量峰值 | $F_{\text{peak}}$ | 瞬态/冲击 | 帧间突变强度 | `F_peak` | $F_{\text{peak}}=\max_i \sum_j [P(i,j)-P(i-1,j)]_+$ |
-| 44 | TKEO 峰值比 | $R_{\text{tkeo}}$ | 瞬态/冲击 | 局部尖锐度 | `R_tkeo` | $R_{\text{tkeo}}=\dfrac{\max(\Psi[n])}{\mathrm{mean}(\Psi[n])}$ |
-| 45 | 残差 TKEO 峰值比 | $R_{\text{res,tkeo}}$ | 瞬态/冲击 | 残差尖锐瞬态 | `R_res_tkeo` | $R_{\text{res,tkeo}}=\dfrac{\max(\Psi_{\text{res}}[n])}{\mathrm{mean}(\Psi_{\text{res}}[n])}$ |
-| 46 | 局部峭度 | $K_{\text{loc}}$ | 瞬态/冲击 | 冲击尖峰 | `K_loc` | $K_{\text{loc}}=\dfrac{\frac1N\sum(x-\mu)^4}{\sigma^4}$ |
-| 47 | 残差局部峭度最大值 | $K_{\text{res,max}}$ | 瞬态/冲击 | 残差尖峰极值 | `K_res_max` | $K_{\text{res,max}}=\max_m K_{\text{res}}^{(m)}$ |
-| 48 | 谱峭度峰值 | $SK_{\max}$ | 瞬态/冲击 | 瞬态频带定位 | `SK_max` | $SK_{\max}=\max_k \hat{SK}(k)$ |
-| 49 | 峰均比 | $CF_{\text{res}}$ | 瞬态/冲击 | 尖峰/均方强度 | `CF_res` | $CF_{\text{res}}=\dfrac{\max\lvert x_{\text{res}}\rvert}{\mathrm{RMS}(x_{\text{res}})}$ |
-| 50 | 高频半衰期 | $T_{\text{half,high}}$ | 瞬态/冲击 | 高频衰减时长 | `T_half_high` | $T_{\text{half,high}}=t(e_H=0.5e_{H,\max})-t_{\text{peak}}$ |
-| 51 | 残差谱质心 | $SC_{\text{res}}(t)$ | 残差演化 | 异常中心频率 | `SC_res_mean` | $SC_{\text{res}}(t)=\dfrac{\sum fP_{\text{res}}}{\sum P_{\text{res}}}$ |
-| 52 | 残差谱质心斜率 | $k_{\text{res,sc}}$ | 残差演化 | 异常频率下移速度 | `k_res_sc` | $SC_{\text{res}}(t)\approx k_{\text{res,sc}} t+b$ |
-| 53 | 残差高低频能量比 | $R_{\text{res,hl}}(t)$ | 残差演化 | 残差高频占比 | `R_res_hl_mean` | $R_{\text{res,hl}}(t)=\dfrac{E_{\text{res,high}}(t)}{E_{\text{res,low}}(t)+\varepsilon}$ |
-| 54 | 残差高低频能量比斜率 | $k_{\text{res,hl}}$ | 残差演化 | 残差高频衰减速度 | `k_res_hl` | $R_{\text{res,hl}}(t)\approx k_{\text{res,hl}}t+b$ |
-| 55 | 残差包络对称性 | $S_{\text{res,env}}$ | 残差演化 | 残差拖尾对称性 | `S_res_env` | $S_{\text{res,env}}=\mathrm{corr}(e_{\text{res}},e_{\text{res}}^{rev})$ |
-| 56 | 残差前后不对称度 | $\eta_{\text{asym}}$ | 残差演化 | 触发后能量偏置 | `eta_asym` | $\eta_{\text{asym}}=\dfrac{E[t_0,t_0+\tau]}{E[t_0-\tau,t_0]}$ |
-| 57 | 小波包节点能量比 | $R_{\text{wp},i}$ | 小波/多分辨率 | 多尺度能量分布 | `R_wp_*` | $R_{\text{wp},i}=\dfrac{E_{\text{wp},i}}{\sum_j E_{\text{wp},j}}$ |
-| 58 | 小波熵 | $H_{\text{wp}}$ | 小波/多分辨率 | 子带分散度 | `H_wp` | $H_{\text{wp}}=-\sum_i p_i\ln p_i$ |
-| 59 | 高频子带能量突发指数 | $I_{\text{burst}}$ | 小波/多分辨率 | 高频突发性 | `I_burst` | $I_{\text{burst}}=\dfrac{\max(E_{\text{wp}}(t))}{\mathrm{median}(E_{\text{wp}}(t))}$ |
-| 60 | 高频-低频能差 | $D_{\text{WPT}}$ | 小波/多分辨率 | 高频异常偏置 | `D_WPT` | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in Harm}p_i$ |
-| 61 | 阻尼原子最大匹配度 | $C_{\text{damp}}$ | 阻尼模型 | 阻尼振荡证据强度 | `C_damp` | $C_{\text{damp}}=\dfrac{\max_\theta \lvert\langle r,g_\theta\rangle\rvert}{\lVert r\rVert\,\lVert g_\theta\rVert}$ |
-| 62 | 残差衰减常数 | $\hat\alpha$ | 阻尼模型 | 指数衰减速度 | `alpha_hat` | $\log e_{\text{res}}(t)\approx -\hat\alpha t+b$ |
-| 63 | 矩阵铅笔拟合优度 | $Q_{\text{MP}}$ | 阻尼模型 | 阻尼正弦解释能力 | `Q_MP` | 阻尼拟合误差下降率 |
-| 64 | 加入损伤原子后的误差下降率 | $\Delta J$ | 模型竞争 | 新增损伤分量的解释增益 | `Delta_J` | $\Delta J=\dfrac{\lVert x-\hat x_f\rVert_2^2-\lVert x-\hat x_f-\hat x_d\rVert_2^2}{\lVert x\rVert_2^2}$ |
-| 65 | 字典损伤系数比 | $\eta_{\text{dict}}$ | 稀疏表示 | 损伤字典占比 | `eta_dict` | $\eta_{\text{dict}}=\dfrac{\lVert\alpha_d\rVert_1}{\lVert\alpha_f\rVert_1+\lVert\alpha_d\rVert_1}$ |
+| 序号 | 名称 | 符号 | 分类 | 物理意义（关键词） | 计算公式 |
+|---|---|---|---|---|---|
+| 1 | 包络峰位比 | $r_p$ | 时间/包络 | 峰值早晚、前移程度 | $r_p=\dfrac{t_p-t_{on}}{t_{off}-t_{on}}$ |
+| 2 | 能量质心位置 | $C_E$ | 时间/包络 | 能量前后偏置、重心位置 | $C_E=\dfrac{\sum_t t\,e^2(t)}{\sum_t e^2(t)}$ |
+| 3 | 包络不对称度 | $A_{\text{env}}$ | 时间/包络 | 早峰拖尾、快起慢衰 | $A_{\text{env}}=\dfrac{(t_{off}-t_p)-(t_p-t_{on})}{t_{off}-t_{on}}$ |
+| 4 | 包络对称性 | $S_{\text{env}}$ | 时间/包络 | 左右镜像相似、鼓包程度 | $S_{\text{env}}=\mathrm{corr}(e,e^{rev})$ |
+| 5 | 包络偏度 | $Sk_{\text{env}}$ | 时间/包络 | 拖尾偏斜、偏态 | $Sk_{\text{env}}=\dfrac{1}{N}\sum\dfrac{(e_i-\mu_e)^3}{\sigma_e^3}$ |
+| 6 | 上升下降时间比 | $R_{td}$ | 时间/包络 | 快起慢衰 | $R_{td}=\dfrac{T_{\text{decay}}}{T_{\text{rise}}}$ |
+| 7 | 前后能量比 | $R_{fb}$ | 时间/包络 | 峰前峰后能量不均衡 | $R_{fb}=\dfrac{E_{\text{before}}}{E_{\text{after}}}$ |
+| 8 | 鼓包集中度 | $C_{\text{bulge}}$ | 时间/包络 | 鼓包主体占比 | $C_{\text{bulge}}=\dfrac{T_\eta}{T}$ |
+| 9 | 局部鼓包个数 | $N_{\text{bulge}}$ | 时间/包络 | 多鼓包背景复杂度 | $N_{\text{bulge}}=\#\{\text{满足阈值与最小间隔约束的鼓包}\}$ |
+| 10 | 包络拟合误差 | $\varepsilon_{\text{env}}$ | 时间/包络 | 偏离标准鼓包 | $\varepsilon_{\text{env}}=\dfrac{\|e-\hat e\|_2}{\|e\|_2}$ |
+| 11 | 包络左右宽度比 | $\eta_{\text{bw}}$ | 时间/包络 | 左右展宽对称性 | $\eta_{\text{bw}}=\dfrac{t_{95}-t_p}{t_p-t_{05}}$ |
+| 12 | 谱质心 | $SC(t)$ | 时频演化 | 频谱中心位置 | $SC(t)=\dfrac{\sum_f fP(t,f)}{\sum_f P(t,f)}$ |
+| 13 | 谱质心衰减斜率 | $k_{sc}$ | 时频演化 | 高频向低频迁移速度 | $SC(t)\approx k_{sc}t+b_{sc}$ |
+| 14 | 高频低频能量比 | $R_{hl}(t)$ | 能量/时频 | 高频占比 | $R_{hl}(t)=\dfrac{E_{\text{high}}(t)}{E_{\text{low}}(t)+\varepsilon}$ |
+| 15 | 高频低频能量比斜率 | $k_{hl}$ | 能量/时频 | 高频衰减速度 | $R_{hl}(t)\approx k_{hl}t+b_{hl}$ |
+| 16 | 高频衰减斜率 | $\beta_H$ | 能量/时频 | 峰后高频衰减 | $\log(E_H(t)+\varepsilon)\approx \beta_H t+b_H$ |
+| 17 | 时频熵 | $H_{tf}$ | 时频演化 | 能量分散度 | $H_{tf}=-\sum p_{ij}\ln p_{ij}$ |
+| 18 | 频谱平坦度 | $SF$ | 频域 | 谱平坦/尖峰程度 | $SF=\dfrac{\exp(\frac1K\sum \ln P_k)}{\frac1K\sum P_k}$ |
+| 19 | Renyi 熵 | $H_\alpha$ | 时频演化 | 集中度/复杂度 | $H_\alpha=\dfrac{1}{1-\alpha}\log\sum p_{tf}^{\alpha}$ |
+| 20 | 主脊线连续率 | $\rho_r$ | 谐波/脊线 | 主结构连续性 | $\rho_r=\dfrac{L_{\text{valid}}}{L_{\text{all}}}$ |
+| 21 | 脊线缺口率 | $G_{\text{gap}}$ | 谐波/脊线 | 中断破坏程度 | $G_{\text{gap}}=\dfrac{N_{\text{gap}}}{L_{\text{all}}}$ |
+| 22 | 脊线拟合优度 | $R^2_{\text{ridge}}$ | 谐波/脊线 | 主频轨迹可建模性 | $R^2(f_1,\hat f_1)$ |
+| 23 | 拱形轨迹分数 | $S_{\text{arch}}$ | 谐波/脊线 | 先升后降拱形趋势 | $S_{\text{arch}}=R^2(f_1,q)\mathbf1(a<0)\mathbf1(t_v\in[0.2T,0.8T])$ |
+| 24 | 二倍频存在度 | $H2_{\text{ratio}}$ | 二倍频/谐波 | 2:1 关系出现频率 | $H2_{\text{ratio}}=\dfrac{N\{|f_2-2f_1|<\Delta f\}}{N_{\text{active}}}$ |
+| 25 | 二倍频比 | $R_{2:1}$ | 二倍频/谐波 | 二倍频能量强度 | $R_{2:1}=\dfrac{\sum_t E(t,2f_1\pm\Delta f)}{\sum_t E(t,f_1\pm\Delta f)+\varepsilon}$ |
+| 26 | 谐波栈能量比 | $H_{\text{stack}}$ | 二倍频/谐波 | 多谐波组织程度 | $H_{\text{stack}}=\dfrac{\sum_t\sum_{m=1}^M E(t,mf_1\pm\Delta f)}{\sum_{t,f}S(t,f)}$ |
+| 27 | 谐波能量比 | $R_h$ | 二倍频/谐波 | 二倍频/基频强度比 | $R_h=\dfrac{E_{2nd}}{E_{1st}}$ |
+| 28 | 二倍频一致性误差 | $\varepsilon_{2\times}$ | 二倍频/谐波 | 偏离 2:1 程度 | $\varepsilon_{2\times}=\mathrm{median}\!\left(\dfrac{|f_2-2f_1|}{f_1}\right)$ |
+| 29 | 谐波一致性误差 | $C_h$ | 二倍频/谐波 | 二倍频跟随误差 | $C_h=\mathrm{mean}(|f_2-2f_1|)$ |
+| 30 | 谐波能量占比 | $R_{\text{harm}}$ | 二倍频/谐波 | 主谐波可解释占比 | $R_{\text{harm}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ |
+| 31 | 脊线连续性 | $Ridge_{\text{coh}}$ | 二倍频/谐波 | 谐波掩膜内能量占比 | $Ridge_{\text{coh}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ |
+| 32 | 上升帧占比 | $\rho_{up}$ | 脊线演化 | 上升段占比 | $\rho_{up}=\dfrac{N\{df_1/dt>\tau_s\}}{N_{\text{active}}}$ |
+| 33 | 下降帧占比 | $\rho_{down}$ | 脊线演化 | 下降段占比 | $\rho_{down}=\dfrac{N\{df_1/dt<-\tau_s\}}{N_{\text{active}}}$ |
+| 34 | 转折次数 | $N_{\text{turn}}$ | 脊线演化 | 拐点/多鼓包复杂度 | $N_{\text{turn}}=N\{\mathrm{sign}(df_1/dt)\text{变化}\}$ |
+| 35 | 频率跨度 | $\Delta f_{\text{span}}$ | 脊线演化 | 基频摆动范围 | $\Delta f_{\text{span}}=\max(f_1)-\min(f_1)$ |
+| 36 | 归一化曲率 | $C_f$ | 脊线演化 | 弯曲程度 | $C_f=\mathrm{mean}(|d^2f_1/dt^2|)$ |
+| 37 | 谐波可解释能量 | $E_{\text{harm}}$ | 残差/背景扣除 | 可由流噪声解释的能量 | $E_{\text{harm}}=\sum M_hP$ |
+| 38 | 残差能量 | $E_{\text{res}}$ | 残差/背景扣除 | 未解释异常能量 | $E_{\text{res}}=E_{\text{total}}-E_{\text{harm}}$ |
+| 39 | 非谐波残差占比 | $\rho_{\text{res}}$ | 残差/背景扣除 | 异常残差占比 | $\rho_{\text{res}}=\dfrac{E_{\text{res}}}{E_{\text{total}}}$ |
+| 40 | 高频残差占比 | $R_{\text{high,res}}$ | 残差/背景扣除 | 高频异常强度 | $R_{\text{high,res}}=\dfrac{E_{\text{res,high}}}{E_{\text{total}}}$ |
+| 41 | 流噪声重构误差 | $\varepsilon_{\text{rec}}$ | 残差/背景扣除 | 主结构失配 | $\varepsilon_{\text{rec}}=\dfrac{\|x-\hat x_f\|_2^2}{\|x\|_2^2}$ |
+| 42 | 异常子窗个数 | $N_{\text{abn}}$ | 残差/背景扣除 | 异常出现次数 | $N_{\text{abn}}=N\{\rho_{\text{res}}^{(m)}>\tau_{\text{res}}\}$ |
+| 43 | 谱流量峰值 | $F_{\text{peak}}$ | 瞬态/冲击 | 帧间突变强度 | $F_{\text{peak}}=\max_i \sum_j [P(i,j)-P(i-1,j)]_+$ |
+| 44 | TKEO 峰值比 | $R_{\text{tkeo}}$ | 瞬态/冲击 | 局部尖锐度 | $R_{\text{tkeo}}=\dfrac{\max(\Psi[n])}{\mathrm{mean}(\Psi[n])}$ |
+| 45 | 残差 TKEO 峰值比 | $R_{\text{res,tkeo}}$ | 瞬态/冲击 | 残差尖锐瞬态 | $R_{\text{res,tkeo}}=\dfrac{\max(\Psi_{\text{res}}[n])}{\mathrm{mean}(\Psi_{\text{res}}[n])}$ |
+| 46 | 局部峭度 | $K_{\text{loc}}$ | 瞬态/冲击 | 冲击尖峰 | $K_{\text{loc}}=\dfrac{\frac1N\sum(x-\mu)^4}{\sigma^4}$ |
+| 47 | 残差局部峭度最大值 | $K_{\text{res,max}}$ | 瞬态/冲击 | 残差尖峰极值 | $K_{\text{res,max}}=\max_m K_{\text{res}}^{(m)}$ |
+| 48 | 谱峭度峰值 | $SK_{\max}$ | 瞬态/冲击 | 瞬态频带定位 | $SK_{\max}=\max_k \hat{SK}(k)$ |
+| 49 | 峰均比 | $CF_{\text{res}}$ | 瞬态/冲击 | 尖峰/均方强度 | $CF_{\text{res}}=\dfrac{\max|x_{\text{res}}|}{\mathrm{RMS}(x_{\text{res}})}$ |
+| 50 | 高频半衰期 | $T_{\text{half,high}}$ | 瞬态/冲击 | 高频衰减时长 | $T_{\text{half,high}}=t(e_H=0.5e_{H,\max})-t_{\text{peak}}$ |
+| 51 | 残差谱质心 | $SC_{\text{res}}(t)$ | 残差演化 | 异常中心频率 | $SC_{\text{res}}(t)=\dfrac{\sum fP_{\text{res}}}{\sum P_{\text{res}}}$ |
+| 52 | 残差谱质心斜率 | $k_{\text{res,sc}}$ | 残差演化 | 异常频率下移速度 | $SC_{\text{res}}(t)\approx k_{\text{res,sc}} t+b$ |
+| 53 | 残差高低频能量比 | $R_{\text{res,hl}}(t)$ | 残差演化 | 残差高频占比 | $R_{\text{res,hl}}(t)=\dfrac{E_{\text{res,high}}(t)}{E_{\text{res,low}}(t)+\varepsilon}$ |
+| 54 | 残差高低频能量比斜率 | $k_{\text{res,hl}}$ | 残差演化 | 残差高频衰减速度 | $R_{\text{res,hl}}(t)\approx k_{\text{res,hl}}t+b$ |
+| 55 | 残差包络对称性 | $S_{\text{res,env}}$ | 残差演化 | 残差拖尾对称性 | $S_{\text{res,env}}=\mathrm{corr}(e_{\text{res}},e_{\text{res}}^{rev})$ |
+| 56 | 残差前后不对称度 | $\eta_{\text{asym}}$ | 残差演化 | 触发后能量偏置 | $\eta_{\text{asym}}=\dfrac{E[t_0,t_0+\tau]}{E[t_0-\tau,t_0]}$ |
+| 57 | 小波包节点能量比 | $R_{\text{wp},i}$ | 小波/多分辨率 | 多尺度能量分布 | $R_{\text{wp},i}=\dfrac{E_{\text{wp},i}}{\sum_j E_{\text{wp},j}}$ |
+| 58 | 小波熵 | $H_{\text{wp}}$ | 小波/多分辨率 | 子带分散度 | $H_{\text{wp}}=-\sum_i p_i\ln p_i$ |
+| 59 | 高频子带能量突发指数 | $I_{\text{burst}}$ | 小波/多分辨率 | 高频突发性 | $I_{\text{burst}}=\dfrac{\max(E_{\text{wp}}(t))}{\mathrm{median}(E_{\text{wp}}(t))}$ |
+| 60 | 高频-低频能差 | $D_{\text{WPT}}$ | 小波/多分辨率 | 高频异常偏置 | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in Harm}p_i$ |
+| 61 | 阻尼原子最大匹配度 | $C_{\text{damp}}$ | 阻尼模型 | 阻尼振荡证据强度 | $C_{\text{damp}}=\dfrac{\max_\theta |\langle r,g_\theta\rangle|}{\|r\|\|g_\theta\|}$ |
+| 62 | 残差衰减常数 | $\hat\alpha$ | 阻尼模型 | 指数衰减速度 | $\log e_{\text{res}}(t)\approx -\hat\alpha t+b$ |
+| 63 | 矩阵铅笔拟合优度 | $Q_{\text{MP}}$ | 阻尼模型 | 阻尼正弦解释能力 | 阻尼拟合误差下降率 |
+| 64 | 加入损伤原子后的误差下降率 | $\Delta J$ | 模型竞争 | 新增损伤分量的解释增益 | $\Delta J=\dfrac{\|x-\hat x_f\|^2-\|x-\hat x_f-\hat x_d\|^2}{\|x\|^2}$ |
+| 65 | 字典损伤系数比 | $\eta_{\text{dict}}$ | 稀疏表示 | 损伤字典占比 | $\eta_{\text{dict}}=\dfrac{\|\alpha_d\|_1}{\|\alpha_f\|_1+\|\alpha_d\|_1}$ |
 
 ---
 
