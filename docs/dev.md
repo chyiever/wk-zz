@@ -40,3 +40,11 @@
   - 已提交到本地 `master` 分支；
   - 已推送到 `origin/master`（以终端 push 结果为准）。
 
+- 补充修复（同日）：
+  - 问题：当 `EXPERIMENTS` 配置为单个字符串（如 `exp_07_train_F130_F130A_F130C`）时，旧逻辑会按字符迭代，导致误访问 `...\\e\\selected_features.csv` 并报 `FileNotFoundError`。
+  - 修复：
+    - 更新 `list_experiments()` 入参兼容：`None / str / list[str] / tuple[str, ...]`；
+    - 当传入单字符串时自动包装为单元素列表，不再逐字符迭代；
+    - 配置注释补充“单实验可直接写字符串”的示例。
+  - 影响文件：`tools/build_realdata_prediction_notebook.py`、`notebooks/2026-05-25-realdata_label_prediction_cross_condition.ipynb`。
+

@@ -78,6 +78,7 @@ def main() -> None:
             "# 模型类型：'logistic_regression' | 'rbf_svm' | 'random_forest'\n"
             "MODEL_TYPE = 'logistic_regression'\n\n"
             "# 指定实验组列表，例如 ['exp_01_train_F130', 'exp_07_train_F130_F130A_F130C']\n"
+            "# 单实验也可直接写字符串，例如 'exp_07_train_F130_F130A_F130C'\n"
             "# 设为 None 时自动扫描全部 exp_*\n"
             "EXPERIMENTS = None\n\n"
             "# 是否优先使用训练阶段导出的阈值（推荐 True）\n"
@@ -100,10 +101,20 @@ def main() -> None:
 
     nb["cells"].append(
         code_cell(
-            "def list_experiments(model_root: Path, experiments: list[str] | None) -> list[str]:\n"
-            "    if experiments:\n"
-            "        return experiments\n"
-            "    return sorted([p.name for p in model_root.iterdir() if p.is_dir() and p.name.startswith('exp_')])\n\n"
+            "def list_experiments(model_root: Path, experiments: list[str] | str | None) -> list[str]:\n"
+            "    # 兼容三种输入：None / 单个字符串 / 字符串列表\n"
+            "    if experiments is None:\n"
+            "        return sorted([p.name for p in model_root.iterdir() if p.is_dir() and p.name.startswith('exp_')])\n"
+            "    if isinstance(experiments, str):\n"
+            "        exp = experiments.strip()\n"
+            "        if not exp:\n"
+            "            return sorted([p.name for p in model_root.iterdir() if p.is_dir() and p.name.startswith('exp_')])\n"
+            "        return [exp]\n"
+            "    if isinstance(experiments, (list, tuple)):\n"
+            "        out = [str(x).strip() for x in experiments if str(x).strip()]\n"
+            "        return out\n"
+            "    raise TypeError('EXPERIMENTS must be None, str, list[str], or tuple[str, ...]')\n"
+            "\n"
             "def load_selected_features(exp_dir: Path) -> list[str]:\n"
             "    sf = exp_dir / 'selected_features.csv'\n"
             "    if not sf.exists():\n"
@@ -374,4 +385,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
