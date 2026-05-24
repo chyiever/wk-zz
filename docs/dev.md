@@ -21,3 +21,22 @@
   - 已提交到本地 `master` 分支。
   - 已推送到 `origin/master`。
 
+## 2026-05-25
+
+- 本次更新范围：`tools/build_realdata_prediction_notebook.py`、`notebooks/2026-05-25-realdata_label_prediction_cross_condition.ipynb`、`docs/dev.md`。
+- 程序更新日志：
+  - 预测 notebook 新增“训练阈值优先”机制：增加 `USE_TRAINED_THRESHOLD` 开关，默认 `True`。
+  - 对每个实验组（`exp_*`）按当前 `MODEL_TYPE` 自动读取训练阶段保存阈值：
+    - 优先从 `summary.csv` 的 `model_name + threshold` 读取；
+    - 若缺失则回退读取 `metrics_<model_type>_*.json` 的 `threshold`。
+  - 预测输出新增阈值追踪字段：`threshold_in_use`、`threshold_source`，便于回溯每条预测所用阈值来源（`trained/manual`）。
+  - 概率曲线图阈值线改为使用分组实际阈值（而不是固定全局阈值）。
+  - 保持特征向量顺序强约束：`x = df.loc[:, selected_features]`，与模型输入顺序一致。
+- 自检记录：
+  - notebook 由 Python 脚本以 `encoding='utf-8'` 重新生成；
+  - 关键配置与函数存在：`USE_TRAINED_THRESHOLD`、`load_trained_threshold`、`threshold_in_use`；
+  - 中文文本自检未发现 `'?'` 乱码占位。
+- GitHub 上传日志：
+  - 已提交到本地 `master` 分支；
+  - 已推送到 `origin/master`（以终端 push 结果为准）。
+

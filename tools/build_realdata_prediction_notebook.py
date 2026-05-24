@@ -5,6 +5,7 @@
 说明：
 - 仅使用 Python 标准库写入 .ipynb（json），避免终端重定向直接修改 notebook。
 - notebook 内显式保证特征顺序：严格按 selected_features.csv 的顺序取列后再预测。
+- 支持优先读取训练阶段导出的阈值（每个实验组单独阈值）。
 """
 
 from __future__ import annotations
@@ -14,11 +15,7 @@ from pathlib import Path
 
 
 def md_cell(text: str) -> dict:
-    return {
-        "cell_type": "markdown",
-        "metadata": {},
-        "source": text,
-    }
+    return {"cell_type": "markdown", "metadata": {}, "source": text}
 
 
 def code_cell(text: str) -> dict:
@@ -35,11 +32,7 @@ def main() -> None:
     nb = {
         "cells": [],
         "metadata": {
-            "kernelspec": {
-                "display_name": "Python 3",
-                "language": "python",
-                "name": "python3",
-            },
+            "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
             "language_info": {"name": "python"},
         },
         "nbformat": 4,
@@ -61,7 +54,8 @@ def main() -> None:
         code_cell(
             "from __future__ import annotations\n\n"
             "from pathlib import Path\n"
-            "import re\n\n"
+            "import re\n"
+            "import json\n\n"
             "import joblib\n"
             "import numpy as np\n"
             "import pandas as pd\n"
@@ -86,6 +80,9 @@ def main() -> None:
             "# 指定实验组列表，例如 ['exp_01_train_F130', 'exp_07_train_F130_F130A_F130C']\n"
             "# 设为 None 时自动扫描全部 exp_*\n"
             "EXPERIMENTS = None\n\n"
+            "# 是否优先使用训练阶段导出的阈值（推荐 True）\n"
+            "USE_TRAINED_THRESHOLD = True\n\n"
+            "# 手动阈值（当 USE_TRAINED_THRESHOLD=False 或未找到训练阈值时使用）\n"
             "# 二分类阈值：概率 >= 阈值 判为正样本（断丝）\n"
             "PROB_THRESHOLD = 0.5\n\n"
             "# 连续时间分段阈值（秒）\n"
@@ -94,6 +91,7 @@ def main() -> None:
             "OUTPUT_DIR.mkdir(parents=True, exist_ok=True)\n\n"
             "print('MODEL_ROOT =', MODEL_ROOT)\n"
             "print('MODEL_TYPE =', MODEL_TYPE)\n"
+            "print('USE_TRAINED_THRESHOLD =', USE_TRAINED_THRESHOLD)\n"
             "print('FEATURE_DIRS =')\n"
             "for p in FEATURE_DIRS:\n"
             "    print('  -', p)\n"
@@ -125,6 +123,25 @@ def main() -> None:
             "    if not hasattr(model, 'predict_proba'):\n"
             "        raise TypeError(f'model has no predict_proba: {model_path}')\n"
             "    return model, model_path\n\n"
+            "def load_trained_threshold(exp_dir: Path, model_type: str) -> float | None:\n"
+            "    # 优先从 summary.csv 按模型名读取；若缺失则回退到 metrics_*.json\n"
+            "    summary_path = exp_dir / 'summary.csv'\n"
+            "    if summary_path.exists():\n"
+            "        sdf = pd.read_csv(summary_path)\n"
+            "        if {'model_name', 'threshold'}.issubset(set(sdf.columns)):\n"
+            "            sub = sdf[sdf['model_name'].astype(str) == str(model_type)]\n"
+            "            if not sub.empty:\n"
+            "                vals = pd.to_numeric(sub['threshold'], errors='coerce').dropna()\n"
+            "                if not vals.empty:\n"
+            "                    return float(vals.iloc[0])\n"
+            "    for p in sorted(exp_dir.glob(f'metrics_{model_type}_*.json')):\n"
+            "        try:\n"
+            "            obj = json.loads(p.read_text(encoding='utf-8'))\n"
+            "            if obj.get('threshold', None) is not None:\n"
+            "                return float(obj['threshold'])\n"
+            "        except Exception:\n"
+            "            continue\n"
+            "    return None\n\n"
             "def sorted_feature_files(feature_dir: Path) -> list[Path]:\n"
             "    return sorted(feature_dir.glob('*window_features*.csv'))\n\n"
             "def infer_log_path(feature_csv_path: Path) -> Path | None:\n"
@@ -142,8 +159,7 @@ def main() -> None:
             "            else:\n"
             "                # 优先保留特征表已有值，缺失时用 log 表补齐\n"
             "                df['window_start_datetime'] = df['window_start_datetime'].where(\n"
-            "                    df['window_start_datetime'].notna(),\n"
-            "                    log_df['window_start_datetime']\n"
+            "                    df['window_start_datetime'].notna(), log_df['window_start_datetime']\n"
             "                )\n"
             "    return df\n\n"
             "def build_time_series(df: pd.DataFrame) -> pd.Series:\n"
@@ -156,7 +172,6 @@ def main() -> None:
             "    offset_s = pd.to_numeric(df.get('window_start_offset_s', np.nan), errors='coerce')\n"
             "    if np.isfinite(offset_s).any():\n"
             "        return pd.Timestamp('1970-01-01') + pd.to_timedelta(offset_s.fillna(0.0), unit='s')\n"
-            "    # 最后兜底：按样本序号构造秒级时间\n"
             "    return pd.to_datetime(pd.RangeIndex(len(df)), unit='s', origin='unix', errors='coerce')\n\n"
             "def split_continuous_segments(ts: pd.Series, gap_seconds: float) -> pd.Series:\n"
             "    # 相邻时间差大于阈值则切分新段\n"
@@ -175,11 +190,19 @@ def main() -> None:
             "for exp_name in experiments:\n"
             "    exp_dir = MODEL_ROOT / exp_name\n"
             "    selected_features = load_selected_features(exp_dir)\n"
-            "    model, model_path = load_model(exp_dir, MODEL_TYPE)\n\n"
+            "    model, model_path = load_model(exp_dir, MODEL_TYPE)\n"
+            "    trained_threshold = load_trained_threshold(exp_dir, MODEL_TYPE)\n"
+            "    if USE_TRAINED_THRESHOLD and trained_threshold is not None:\n"
+            "        threshold_in_use = float(trained_threshold)\n"
+            "        threshold_source = 'trained'\n"
+            "    else:\n"
+            "        threshold_in_use = float(PROB_THRESHOLD)\n"
+            "        threshold_source = 'manual'\n\n"
             "    print('\\n' + '=' * 88)\n"
             "    print(f'Experiment: {exp_name}')\n"
             "    print(f'Model     : {MODEL_TYPE} ({model_path.name})')\n"
-            "    print(f'Features  : {selected_features}')\n\n"
+            "    print(f'Features  : {selected_features}')\n"
+            "    print(f'Threshold : {threshold_in_use:.6f} (source={threshold_source})')\n\n"
             "    for feature_dir in FEATURE_DIRS:\n"
             "        files = sorted_feature_files(feature_dir)\n"
             "        if not files:\n"
@@ -195,7 +218,7 @@ def main() -> None:
             "            # 核心约束：严格按 selected_features 顺序取列，保证模型输入向量顺序一致\n"
             "            x = df.loc[:, selected_features].apply(pd.to_numeric, errors='coerce')\n"
             "            prob_pos = model.predict_proba(x)[:, 1]\n"
-            "            pred = (prob_pos >= PROB_THRESHOLD).astype(int)\n"
+            "            pred = (prob_pos >= threshold_in_use).astype(int)\n"
             "            ts = build_time_series(df)\n\n"
             "            out = pd.DataFrame({\n"
             "                'experiment': exp_name,\n"
@@ -209,6 +232,8 @@ def main() -> None:
             "                'prob_pos': prob_pos,\n"
             "                'prob_pos_pct': prob_pos * 100.0,\n"
             "                'pred_label': pred,\n"
+            "                'threshold_in_use': threshold_in_use,\n"
+            "                'threshold_source': threshold_source,\n"
             "            })\n\n"
             "            n_total = int(len(out))\n"
             "            n_pos = int((out['pred_label'] == 1).sum())\n"
@@ -222,7 +247,8 @@ def main() -> None:
             "                'positive_count': n_pos,\n"
             "                'negative_count': n_neg,\n"
             "                'total_count': n_total,\n"
-            "                'threshold': PROB_THRESHOLD,\n"
+            "                'threshold': threshold_in_use,\n"
+            "                'threshold_source': threshold_source,\n"
             "            })\n"
             "            all_pred_rows.append(out)\n\n"
             "if not all_pred_rows:\n"
@@ -252,7 +278,8 @@ def main() -> None:
             "global_total = int(len(pred_df))\n"
             "global_pos = int((pred_df['pred_label'] == 1).sum())\n"
             "global_neg = global_total - global_pos\n"
-            "print(f'[GLOBAL] pos={global_pos}, neg={global_neg}, total={global_total}, threshold={PROB_THRESHOLD}')\n\n"
+            "print(f'[GLOBAL] pos={global_pos}, neg={global_neg}, total={global_total}')\n"
+            "print('threshold mode =', 'trained' if USE_TRAINED_THRESHOLD else 'manual')\n\n"
             "# 分组统计\n"
             "agg = (\n"
             "    pred_df.groupby(['experiment', 'feature_dir', 'feature_file'], as_index=False)['pred_label']\n"
@@ -304,8 +331,9 @@ def main() -> None:
             "        fig, ax = plt.subplots(figsize=(11, 4))\n"
             "        x = pd.to_datetime(g['window_start_datetime'])\n"
             "        y = g['prob_pos_pct']\n"
+            "        th = float(g['threshold_in_use'].iloc[0])\n"
             "        ax.plot(x, y, lw=1.4)\n"
-            "        ax.axhline(PROB_THRESHOLD * 100.0, color='r', ls='--', lw=1.0, label=f'threshold={PROB_THRESHOLD:.2f}')\n"
+            "        ax.axhline(th * 100.0, color='r', ls='--', lw=1.0, label=f'threshold={th:.3f}')\n"
             "        ax.set_ylim(0, 100)\n"
             "        ax.set_xlabel('时间 (HH:MM:SS)')\n"
             "        ax.set_ylabel('断丝疑似概率 (%)')\n"
@@ -327,7 +355,7 @@ def main() -> None:
     nb["cells"].append(
         md_cell(
             "## 使用说明\n\n"
-            "1. 在“用户配置区”修改 `FEATURE_DIRS`、`MODEL_TYPE`、`EXPERIMENTS`、`PROB_THRESHOLD`。\n"
+            "1. 在“用户配置区”修改 `FEATURE_DIRS`、`MODEL_TYPE`、`EXPERIMENTS`、`USE_TRAINED_THRESHOLD`、`PROB_THRESHOLD`。\n"
             "2. 顺序执行全部单元格。\n"
             "3. 输出内容：\n"
             "- `outputs/realdata_prediction_cross_condition/predictions_<model_type>.csv`\n"
