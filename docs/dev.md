@@ -70,3 +70,17 @@
   - 已提交到本地 `master` 分支；
   - 已推送到 `origin/master`（以终端 push 结果为准）。
 
+  - 补充更新（同日）：
+    - 更新范围：`notebooks/2026-05-27-feature_comparison_build3_vs_batch.ipynb`、`tools/modify_comparison_notebook.py`、`docs/dev.md`。
+    - 为 notebook 各节添加一级标题（H1）与二级标题（H2，共 13 节），提升可读性。
+    - 新增第 13 节"特征概率分布对比：方法A（无标签）vs 方法B（按标签分组）"：
+      - 方法A：读取 `outputs/realdata_feature_dataset_20260519_v3` + `outputs/realdata_feature_dataset_20260523` 中的特征 CSV，所有样本合并（719550 条），无标签区分，绘制 KDE 概率密度曲线。
+      - 方法B：读取 `outputs/dataset_build_260518_features_gpu` 中的特征 CSV，按 `label` 列分组（0=噪声 5293 条，1=断丝 5293 条），分别绘制 KDE 曲线。
+      - 每个特征一个子图，横轴为特征值，纵轴为概率密度，共 5 个子图。
+      - 图表保存至 `outputs/feature_distribution_comparison_A_vs_B.png`。
+    - 修改脚本 `tools/modify_comparison_notebook.py`：以 `encoding='utf-8'` 读写 `.ipynb`，插入 H2 标题单元格并追加分布对比代码单元格。
+    - 自检记录：
+      - notebook 由 Python 脚本以 `encoding='utf-8'` 读写，未使用终端重定向；
+      - 中文文本自检未发现 `'?'` 乱码占位；
+      - 分布对比代码独立验证通过，图片生成正常。
+
