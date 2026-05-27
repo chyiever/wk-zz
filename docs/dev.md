@@ -48,3 +48,25 @@
     - 配置注释补充“单实验可直接写字符串”的示例。
   - 影响文件：`tools/build_realdata_prediction_notebook.py`、`notebooks/2026-05-25-realdata_label_prediction_cross_condition.ipynb`。
 
+## 2026-05-27
+
+- 本次更新范围：`notebooks/2026-05-27-feature_comparison_build3_vs_batch.ipynb`、`tools/create_comparison_notebook.py`、`docs/2026-05-27-五特征计算方法对比报告.md`、`docs/dev.md`。
+- 任务背景：
+  - 对 `b_1k_10k__SC_mean`、`b_1k_10k__C_f`、`b_1k_100k__epsilon_2x`、`b_1k_100k__SC_res_mean`、`b_1k_100k__I_burst` 五个特征，验证 `2026-05-19-realdata_feature_dataset_build-3.ipynb` 与 `2026-05-06-batch_feature_extract_12folders_gpu.ipynb` 两个 notebook 的计算结果是否完全一致。
+- 程序更新日志：
+  - 新增对比验证 notebook `2026-05-27-feature_comparison_build3_vs_batch.ipynb`：
+    - 使用同一 TDMS 数据文件（`0002341-500K-20260324T201052.395.tdms`，500 kHz，10 s）；
+    - 相同预处理（去均值 + (1k, 95k) Hz 4 阶 Butterworth 带通滤波）与滑窗参数（20 ms，50% 重叠，共 999 窗口）；
+    - 方法 A：复刻 build-3 的内联自定义函数（`_spectral_centroid_mean`、`_c_f_from_context` 等）；
+    - 方法 B：调用 `fea_cpt_gpu.features.compute_all_features` 后取对应键值；
+    - 两种方法各自独立构建 `FeatureRecord` 与 `build_context`，逐窗口计算并对比。
+  - 新增生成脚本 `tools/create_comparison_notebook.py`，以 `encoding='utf-8'` 写入 notebook，避免终端重定向乱码。
+- 分析结论：
+  - 两个 notebook 均为**滑窗级别**特征计算（非整段信号），数据处理流程完全一致。
+  - 五个特征在 999 个窗口上绝对差均为 0，两种实现方法数学上完全等价。
+  - build-3 的自定义函数是对 `compute_all_features` 中对应逻辑的轻量提取，主要差异在工程结构（5特征专用 vs 全量特征集）。
+  - 详细对比见 `docs/2026-05-27-五特征计算方法对比报告.md`。
+- GitHub 上传日志：
+  - 已提交到本地 `master` 分支；
+  - 已推送到 `origin/master`（以终端 push 结果为准）。
+
