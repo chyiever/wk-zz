@@ -160,3 +160,15 @@
     - GitHub 上传日志：
       - 待提交到本地 `master` 分支；
       - 待推送到 `origin/master`。
+
+  - 代码重构（同日，绘图代码内联化）：
+    - 用户反馈：1) 图片应存放到子文件夹而非 outputs/ 根目录；2) 绘图代码应直接写在 notebook 中便于修改。
+    - 变更：
+      - 新建 `outputs/training_set_representativeness/` 子文件夹，4张图统一存放于此。
+      - 删除 `src/dist_comparison/visualization.py`，4个绘图函数完整内联到 notebook 第14.1节。
+      - `src/dist_comparison/__init__.py` 仅保留 metrics 计算函数导出。
+      - notebook 14.3-14.6 节更新 save_path 指向新子文件夹。
+    - 好处：用户可直接在 notebook 中修改颜色、字体、标题、dpi 等所有绘图属性。
+    - GitHub 上传日志：
+      - 待提交到本地 `master` 分支；
+      - 待推送到 `origin/master`。
