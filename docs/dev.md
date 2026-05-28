@@ -392,3 +392,52 @@
 - GitHub 上传日志：
   - 已提交到本地 `master` 分支；
   - 已推送到 `origin/master`（以终端 push 结果为准）。
+## 2026-05-28（v2.2 架构级优化：持久化进程池 + 共享内存 + GPU集中化STFT + 文件级流水线）
+
+- 本次更新范围：`src/fea_cpt_gpu_v2_2/`（新建）、
+  `notebooks/2026-05-28-realdata_continuous_feature_batch_extract_v2.2.ipynb`（新建）、
+  `tools/build_sliding_window_notebook_v2_2.py`（新建）、
+  `docs/2026-05-28-真实连续数据特征批量提取报告.md`（更新第7-8节）、`docs/dev.md`。
+- 优化背景：
+  - v2.1 实测资源利用率：CPU ~30%，GPU ~20%，均远低于预期。
+  - 根因分析：ProcessPoolExecutor 每 batch 重建（CPU 尖峰+下降）、IPC 序列化 signal_pre 560MB 拷贝、
+    GPU STFT 从未真正批量化（batched=True 已实现但从未调用）、多进程 GPU 竞争、文件串行无流水线。
+- 四项核心优化（不改变特征计算公式，保证输出一致）：
+  - **优化 A：持久化进程池 + 共享内存**
+    - ProcessPoolExecutor 全生命周期复用，不再每 batch 重建，消除进程创建/销毁开销
+    - signal_pre 存入 `multiprocessing.shared_memory`，worker 通过 `_SharedArrayPack` 零拷贝读取
+    - `_worker_shm_cache` 缓存机制：同一文件的共享内存只附加一次，文件切换时自动清理
+  - **优化 B：GPU STFT 集中化批处理**
+    - 主进程调用 `compute_stft_power(batched=True)` 批量计算所有窗口的 STFT
+    - STFT 结果存入共享内存，worker 按 `stft_chunk_idx` 索引读取
+    - 按 `STFT_BATCH_SIZE=200` 分块处理，避免 GPU 内存溢出
+    - PCIe 往返从 999x2=1998 次降至约 10 次
+  - **优化 C：文件级流水线**
+    - `ThreadPoolExecutor(max_workers=1)` 后台预加载下一文件
+    - 文件 N 的特征计算与文件 N+1 的 I/O+预处理并行
+  - **优化 D：Worker 纯 CPU 计算**
+    - Worker 不访问 GPU，从共享内存读取信号切片 + STFT 切片
+    - 纯 CPU 特征计算：butter_filter、envelope、ridge、ISTFT、wavelet、features
+    - 消除多进程 GPU 竞争和 CUDA context 重复初始化
+- 新增文件：
+  - `src/fea_cpt_gpu_v2_2/`：v2.2 完整模块
+    - `sliding_window.py`：核心模块，新增 `_SharedArrayPack`、`_worker_process_window`、`_compute_batched_stft`、`_preload_file` 等
+    - `signal_ops.py`：修复 batched STFT 输出维度注释（`spec_cpu.shape[1]` 改为 `spec_cpu.shape[-1]`）
+    - 其余文件与 v2.1 相同
+  - `notebooks/2026-05-28-realdata_continuous_feature_batch_extract_v2.2.ipynb`：10 个 Cell
+  - `tools/build_sliding_window_notebook_v2_2.py`：notebook 生成脚本
+- 关键设计决策：
+  - 共享内存采用单块连续布局（`_SharedArrayPack`），多数组按 64 字节对齐排列
+  - Worker 通过全局 `_worker_shm_cache` 缓存共享内存附件，避免重复系统调用
+  - 主进程在所有窗口任务完成后才清理共享内存（unlink），保证 worker 读取安全
+  - `process_source_file` 保持 v2.1 兼容接口，内部也使用 v2.2 架构
+- 自检记录：
+  - notebook 由 Python 脚本以 `encoding='utf-8'` 生成，未使用终端重定向；
+  - notebook 中文字符 777 个，替换字符 0 个，编码正确；
+  - sliding_window.py 中文字符 651 个，替换字符 0 个；
+  - signal_ops.py 中文字符 102 个，替换字符 0 个；
+  - build_script 中文字符 852 个，替换字符 0 个；
+  - 所有文件中文自检通过，无乱码。
+- GitHub 上传日志：
+  - 待提交到本地 `master` 分支；
+  - 待推送到 `origin/master`。
