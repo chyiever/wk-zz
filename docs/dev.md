@@ -173,3 +173,49 @@
     - GitHub 上传日志：
       - 已提交到本地 `master` 分支（commit `d95d82b`）；
       - 已推送到 `origin/master`（以终端 push 结果为准）。
+
+## 2026-05-28（滑窗全量特征批量提取）
+
+- 本次更新范围：`src/fea_cpt_gpu/sliding_window.py`（新建）、
+  `notebooks/2026-05-28-realdata_continuous_feature_batch_extract.ipynb`（新建）、
+  `tools/build_sliding_window_notebook.py`（新建）、
+  `docs/2026-05-28-真实连续数据特征批量提取报告.md`（新建）、`docs/dev.md`。
+- 任务背景：
+  - 需要对连续真实数据（npz/tdms）进行滑窗**全量特征**批量提取。
+  - 已有 `2026-05-19-realdata_feature_dataset_build-3.ipynb` 仅计算 5 个选定特征。
+  - 已有 `2026-05-06-batch_feature_extract_12folders_gpu.ipynb` 计算全量特征但面向离散样本。
+  - 需要结合两者：滑窗 + 全量特征 + 兼容 200kHz/500kHz + 高性能。
+- 程序更新日志：
+  - 新建 `src/fea_cpt_gpu/sliding_window.py` 模块，包含：
+    - `discover_source_files()`：多路径递归发现 npz/tdms 文件
+    - `load_source_file()`：npz/tdms 统一加载接口
+    - `upsample_to_target()`：基于 `scipy.signal.resample_poly` 的升采样（200kHz→500kHz，up=5, down=2）
+    - `list_window_ranges()`：滑窗范围计算（窗口时长 + 重叠率 → 窗口列表）
+    - `build_params_for_band()`：为指定频带构建 FeatureParams
+    - `compute_all_features_for_window()`：单窗口全量特征计算（N_bands × ~80 特征）
+    - `process_source_file()`：单文件完整流水线（加载→升采样→预处理→滑窗→并行计算）
+    - `build_sliding_window_dataset()`：批量编排（断点续跑 + 分块 CSV 输出）
+    - `SlidingWindowConfig`：统一配置 dataclass
+  - 新建 `notebooks/2026-05-28-realdata_continuous_feature_batch_extract.ipynb`：
+    - 10 个 Cell，模块化结构：环境导入 → 全局配置 → 文件发现 → 单文件测试 → 批量处理 → 结果汇总 → 质量检查 → 运行日志 → 特征预览
+    - 所有参数（路径、滑窗、升采样、频带、并行）集中在配置 Cell 中修改
+    - 支持多文件夹输入、TDMS 格式、断点续跑
+  - 新建 `tools/build_sliding_window_notebook.py`：以 `encoding='utf-8'` 生成 notebook，避免终端重定向乱码。
+  - 新建 `docs/2026-05-28-真实连续数据特征批量提取报告.md`：包含任务概述、系统设计、关键设计决策、性能分析、输出规范、验证计划、已知限制与优化方向、结论。
+- 设计原则：
+  - **不修改 `src/fea_cpt_gpu/` 下任何已有源码文件**，仅新建 `sliding_window.py` 模块
+  - 通过 import 复用 `fea_cpt_gpu.base`、`fea_cpt_gpu.signal_ops`、`fea_cpt_gpu.features`、`fea_cpt_gpu.params`、`fea_cpt_gpu.gpu_backend`
+- 关键特性：
+  - 统一采样率：200kHz 数据自动升采样到 500kHz，确保特征跨文件可比
+  - 全量特征：每个窗口计算所有频带的全量特征（约 80 特征/频带），非选定子集
+  - 窗级并行：ThreadPoolExecutor + 批量处理，最大化 CPU 利用率
+  - 预处理一次：整条信号的去均值 + 带通滤波仅执行一次，不随窗口重复
+  - 断点续跑：`processed_source_files.txt` 记录已处理文件
+  - 分块输出：每 100 个文件输出一个 CSV，降低单文件过大风险
+- 自检记录：
+  - notebook 由 Python 脚本以 `encoding='utf-8'` 生成，未使用终端重定向；
+  - 中文文本自检：1003 个中文字符，0 个替换字符（\ufffd），编码正确；
+  - 模块导入独立验证通过。
+- GitHub 上传日志：
+  - 待提交到本地 `master` 分支；
+  - 待推送到 `origin/master`。
