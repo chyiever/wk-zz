@@ -328,6 +328,46 @@
   - 待提交到本地 `master` 分支；
   - 待推送到 `origin/master`。
 
+## 2026-05-28（v2.1 新增文件级降采样）
+
+- 本次更新范围：`src/fea_cpt_gpu_v2_1/sliding_window.py`（更新）、
+  `src/fea_cpt_gpu_v2_1/__init__.py`（更新）、
+  `notebooks/2026-05-28-realdata_continuous_feature_batch_extract_v2.1.ipynb`（更新）、
+  `tools/build_sliding_window_notebook_v2_1.py`（更新）、`docs/dev.md`。
+- 任务背景：
+  - 批量处理时，单个文件夹可能包含数百个文件（如 400 个），全部处理耗时过长。
+  - 需要支持按文件夹随机抽取一定比例的文件进行计算，比例可调，且可选择是否启用。
+- 程序更新日志：
+  - `sliding_window.py` 新增 `downsample_source_files()` 函数：
+    - 按 `f.parent`（文件夹）分组，对每个文件夹独立采样
+    - 采样比例 `ratio`（默认 0.6），向上取整，每个文件夹至少保留 1 个文件
+    - 固定随机种子 `seed`（默认 42），保证多次运行结果一致
+    - `ratio >= 1.0` 或 `ratio <= 0.0` 时直接返回原列表（不采样）
+    - 返回排序后的 `list[Path]`
+  - `__init__.py` 将 `downsample_source_files` 加入 import 和 `__all__`
+  - notebook Cell 2（配置）新增三个配置项：
+    - `ENABLE_FILE_DOWNSAMPLING = True`：是否启用文件级降采样
+    - `FILE_SAMPLE_RATIO = 0.6`：每个文件夹随机抽取比例
+    - `FILE_SAMPLE_SEED = 42`：随机种子
+  - notebook Cell 1（导入）新增 `downsample_source_files` 导入
+  - notebook Cell 3（文件发现）更新：
+    - 打印降采样前每个文件夹的文件数
+    - 若启用降采样，调用 `downsample_source_files()` 后打印降采样后文件数及比例
+    - 若未启用，打印"使用全部 N 个文件"
+  - `build_sliding_window_notebook_v2_1.py` 同步更新 Cell 1/2/3
+- 设计原则：
+  - 降采样仅在文件发现之后、批量处理之前执行，不影响特征计算逻辑
+  - 种子固定保证可复现，用户可修改 `FILE_SAMPLE_SEED` 获得不同采样结果
+- 自检记录：
+  - notebook 中文字符 613 个，替换字符（\ufffd）0 个，编码正确
+  - sliding_window.py 中文字符 669 个，替换字符 0 个
+  - build_script 中文字符 615 个，替换字符 0 个
+  - notebook Cell 2 包含 `ENABLE_FILE_DOWNSAMPLING` 验证通过
+  - notebook Cell 3 包含降采样逻辑验证通过
+- GitHub 上传日志：
+  - 待提交到本地 `master` 分支；
+  - 待推送到 `origin/master`。
+
 ## 2026-05-28（2.5 最不重要特征排序）
 
 - 本次更新范围：`notebooks/2026-05-17_cross_condition_experiment.ipynb`、`tools/insert_sec25.py`、`docs/dev.md`。

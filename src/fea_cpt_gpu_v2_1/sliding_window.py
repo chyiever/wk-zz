@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import random
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -789,3 +790,40 @@ def discover_source_files(root_dirs: Sequence[str | Path], max_files: int | None
     if max_files is not None:
         files = files[:max_files]
     return files
+
+
+def downsample_source_files(
+    files: list[Path],
+    ratio: float = 0.6,
+    seed: int = 42,
+) -> list[Path]:
+    """按文件夹对文件列表进行随机降采样。
+
+    对每个文件夹（f.parent）独立采样，抽取 ratio 比例的文件。
+    使用固定种子保证可复现。
+
+    Args:
+        files: 已发现的文件路径列表
+        ratio: 每个文件夹的采样比例 (0~1)，默认 0.6
+        seed: 随机种子，默认 42
+
+    Returns:
+        降采样后的文件路径列表（保持排序）
+    """
+    if ratio >= 1.0 or ratio <= 0.0:
+        return list(files)
+
+    rng = random.Random(seed)
+
+    folder_groups: dict[Path, list[Path]] = {}
+    for f in files:
+        folder_groups.setdefault(f.parent, []).append(f)
+
+    sampled: list[Path] = []
+    for folder, group in folder_groups.items():
+        n = max(1, math.ceil(len(group) * ratio))
+        chosen = rng.sample(group, min(n, len(group)))
+        sampled.extend(chosen)
+
+    sampled.sort()
+    return sampled

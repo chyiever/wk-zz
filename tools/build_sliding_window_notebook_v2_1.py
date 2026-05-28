@@ -73,6 +73,7 @@ from fea_cpt_gpu_v2_1.sliding_window import (
     build_sliding_window_dataset,
     compute_shared_stft,
     discover_source_files,
+    downsample_source_files,
     gpu_backend_info,
     list_window_ranges,
     upsample_to_target,
@@ -120,6 +121,11 @@ WINDOW_BATCH_SIZE = 2048       # v2.1: 从 256 提升到 2048
 ENABLE_NUMA_BINDING = True     # v2.1: NUMA 绑定
 ENABLE_SHARED_STFT = True      # v2.1: 跨频带共享 STFT
 
+# 文件降采样设置
+ENABLE_FILE_DOWNSAMPLING = True   # 是否启用文件级降采样
+FILE_SAMPLE_RATIO = 0.6           # 每个文件夹随机抽取比例 (0~1)
+FILE_SAMPLE_SEED = 42             # 随机种子（保证可复现）
+
 OUTPUT_ROOT = workspace / 'outputs' / 'realdata_continuous_features_20260528_v2_1'
 NPZ_PER_CSV = 100
 MAX_FILES: int | None = None
@@ -135,6 +141,11 @@ print(f'频带数: {len(BANDS)}')
 print(f'并行: {auto_workers} workers, batch={WINDOW_BATCH_SIZE}')
 print(f'NUMA 绑定: {ENABLE_NUMA_BINDING}')
 print(f'共享 STFT: {ENABLE_SHARED_STFT}')
+print(f'文件降采样: {ENABLE_FILE_DOWNSAMPLING}', end='')
+if ENABLE_FILE_DOWNSAMPLING:
+    print(f' (比例={FILE_SAMPLE_RATIO}, 种子={FILE_SAMPLE_SEED})')
+else:
+    print(' (使用全部文件)')
 print(f'输出目录: {OUTPUT_ROOT}')
 
 config = SlidingWindowConfig(
@@ -165,7 +176,7 @@ if not source_files:
 from collections import Counter
 folder_counts = Counter(f.parent.name for f in source_files)
 
-print(f'发现 {len(source_files)} 个源文件')
+print(f'发现 {len(source_files)} 个源文件（降采样前）')
 print(f'\\n各文件夹文件数:')
 for folder, count in sorted(folder_counts.items()):
     print(f'  {folder}: {count}')
@@ -173,7 +184,23 @@ for folder, count in sorted(folder_counts.items()):
 npz_count = sum(1 for f in source_files if f.suffix.lower() == '.npz')
 tdms_count = sum(1 for f in source_files if f.suffix.lower() == '.tdms')
 print(f'\\n文件格式: {npz_count} npz, {tdms_count} tdms')
-'''))
+
+# 文件级降采样
+if ENABLE_FILE_DOWNSAMPLING:
+    source_files = downsample_source_files(
+        source_files,
+        ratio=FILE_SAMPLE_RATIO,
+        seed=FILE_SAMPLE_SEED,
+    )
+    folder_counts_after = Counter(f.parent.name for f in source_files)
+    print(f'\\n降采样后 {len(source_files)} 个源文件（比例={FILE_SAMPLE_RATIO}）')
+    print(f'\\n各文件夹降采样后文件数:')
+    for folder, count in sorted(folder_counts_after.items()):
+        orig = folder_counts.get(folder, 0)
+        print(f'  {folder}: {count} / {orig} ({count/orig*100:.1f}%)')
+else:
+    print(f'\\n未启用降采样，使用全部 {len(source_files)} 个文件')
+    '''))
 
     # Cell 4: 单文件测试
     cells.append(make_cell('code', '''# =========================
