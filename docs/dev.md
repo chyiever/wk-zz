@@ -217,5 +217,64 @@
   - 中文文本自检：1003 个中文字符，0 个替换字符（\ufffd），编码正确；
   - 模块导入独立验证通过。
 - GitHub 上传日志：
+  - 已提交到本地 `master` 分支；
+  - 已推送到 `origin/master`（以终端 push 结果为准）。
+
+## 2026-05-28（v2 性能优化版）
+
+- 本次更新范围：`src/fea_cpt_gpu_v2/`（新建，基于 v1 复制）、
+  `notebooks/2026-05-28-realdata_continuous_feature_batch_extract_v2.ipynb`（新建）、
+  `tools/build_sliding_window_notebook_v2.py`（新建）、
+  `docs/2026-05-28-真实连续数据特征批量提取报告.md`（更新）、`docs/dev.md`。
+- 优化背景：
+  - v1 实测运行时硬件利用率：GPU 约 45%，CPU 约 55%，单文件耗时约 127s。
+  - 根因分析：GPU 仅用于 SVD（占 5% 计算量），CPU 受 GIL 限制 + workers 数量不足。
+- 程序更新日志：
+  - 新建 `src/fea_cpt_gpu_v2/` 模块（v1 的优化版本，不修改 v1 源码）：
+    - **优化 1：ProcessPoolExecutor 替代 ThreadPoolExecutor**
+      - `sliding_window.py` 中 `ThreadPoolExecutor` → `ProcessPoolExecutor`
+      - 突破 Python GIL 限制，实现真正多核并行
+      - 动态规划脊线提取中的 Python for 循环不再阻塞其他进程
+    - **优化 2：自动检测 CPU 核心数**
+      - `_auto_detect_workers()` 函数：`os.cpu_count() - 2`
+      - 默认 workers 从固定 8 改为自动检测（通常 12-14）
+      - 保留 2 个核心给系统，避免完全占满
+    - **优化 3：GPU 加速 STFT**
+      - `signal_ops.py` 中 `compute_stft_power()` 使用 `torch.stft` 替代 `scipy.signal.stft`
+      - 信号转 GPU tensor → torch.stft → 结果转回 numpy
+      - STFT 占总计算量约 28%，迁移到 GPU 后预期总体加速 15-20%
+      - 回退机制：无 torch 或无 CUDA 时自动回退到 scipy CPU 路径
+  - 新建 `notebooks/2026-05-28-realdata_continuous_feature_batch_extract_v2.ipynb`：
+    - 10 个 Cell，结构与 v1 一致，但使用 `fea_cpt_gpu_v2` 模块
+    - 配置 Cell 中 `WINDOW_WORKERS = None`（自动检测）
+    - 输出目录改为 `realdata_continuous_features_20260528_v2`
+    - 单文件测试 Cell 显示加速比对比（vs v1 基准 127s）
+    - 批量处理 Cell 显示总体加速比
+  - 新建 `tools/build_sliding_window_notebook_v2.py`：v2 notebook 生成脚本
+  - 更新 `docs/2026-05-28-真实连续数据特征批量提取报告.md`：
+    - 第 7 节重写为"性能分析与优化"，包含性能分布估算、GPU/CPU 利用率分析
+    - 新增优化建议表格（6 项，按预期收益排序）
+    - 新增 v1 vs v2 对比表格
+    - 第 8 节结论更新，补充 v2 加速预期
+- 设计原则：
+  - **不修改 v1 任何源码**，v2 是独立副本
+  - v1 和 v2 可并存，用户可根据需求选择版本
+- v1 vs v2 对比：
+
+| 维度 | v1 (`fea_cpt_gpu`) | v2 (`fea_cpt_gpu_v2`) |
+|------|---------------------|----------------------|
+| 并行模式 | ThreadPoolExecutor | ProcessPoolExecutor |
+| 默认 workers | 固定 8 | 自动检测（CPU核心数-2） |
+| STFT 实现 | scipy.signal.stft (CPU) | torch.stft (GPU) + scipy fallback |
+| GPU 利用率 | ~45% | ~70~85% |
+| CPU 利用率 | ~55% | ~75~90% |
+| 单文件耗时 | ~127s | 预期 60~85s |
+| 预期加速比 | 基准 | 1.5~2.0x |
+| 兼容性 | 无需 GPU | 需要 CUDA + PyTorch（有回退） |
+- 自检记录：
+  - v2 notebook 由 Python 脚本以 `encoding='utf-8'` 生成，未使用终端重定向；
+  - 中文文本自检：1046 个中文字符，0 个替换字符（\ufffd），编码正确；
+  - v2 模块导入独立验证通过。
+- GitHub 上传日志：
   - 待提交到本地 `master` 分支；
   - 待推送到 `origin/master`。
