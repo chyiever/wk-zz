@@ -147,8 +147,9 @@
       - 以真实数据 719,550 条为参考分布，评估训练集（噪声 5,293 + 断丝 5,293）的覆盖能力。
       - 计算 5 个特征的 MMD、Wasserstein 距离、覆盖率（P10/P25/P50/P75/P90）、OOD 比例。
       - 生成 4 张可视化图：覆盖率对比柱状图、分布重叠 KDE 图、OOD 检测结果、综合评估面板。
-      - 图表保存至 `outputs/training_set_coverage_comparison.png`、`outputs/distribution_overlap_comparison.png`、
-        `outputs/ood_detection_results.png`、`outputs/representativeness_summary.png`。
+      - 图表保存至 `outputs/training_set_representativeness/` 子文件夹下：
+        `training_set_coverage_comparison.png`、`distribution_overlap_comparison.png`、
+        `ood_detection_results.png`、`representativeness_summary.png`。
     - 关键发现：
       - 训练集噪声 SC_mean 覆盖率 0%、OOD 比例 100%，说明训练集"噪声"与真实工况"噪声"本质不同。
       - 训练集断丝在 epsilon_2x 覆盖率 100%、SC_res_mean 覆盖率 99.49%，部分特征覆盖较好。
@@ -158,8 +159,8 @@
       - 中文文本自检未发现 `'?'` 乱码占位；
       - 模块导入与函数调用独立验证通过，4 张图正常生成。
     - GitHub 上传日志：
-      - 待提交到本地 `master` 分支；
-      - 待推送到 `origin/master`。
+      - 已提交到本地 `master` 分支（commit `737cfd9`，后清理 `__pycache__` commit `5675f74`）；
+      - 已推送到 `origin/master`（以终端 push 结果为准）。
 
   - 代码重构（同日，绘图代码内联化）：
     - 用户反馈：1) 图片应存放到子文件夹而非 outputs/ 根目录；2) 绘图代码应直接写在 notebook 中便于修改。
@@ -170,5 +171,5 @@
       - notebook 14.3-14.6 节更新 save_path 指向新子文件夹。
     - 好处：用户可直接在 notebook 中修改颜色、字体、标题、dpi 等所有绘图属性。
     - GitHub 上传日志：
-      - 待提交到本地 `master` 分支；
-      - 待推送到 `origin/master`。
+      - 已提交到本地 `master` 分支（commit `d95d82b`）；
+      - 已推送到 `origin/master`（以终端 push 结果为准）。
