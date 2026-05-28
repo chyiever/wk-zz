@@ -135,3 +135,28 @@
     - GitHub 上传日志：
       - 已提交到本地 `master` 分支；
       - 已推送到 `origin/master`（以终端 push 结果为准）。
+
+  - 补充更新（同日，第14节实现）：
+    - 更新范围：`src/dist_comparison/`（新建模块）、`notebooks/2026-05-27-feature_comparison_build3_vs_batch.ipynb`、`docs/dev.md`。
+    - 新建 `src/dist_comparison/` 模块，包含分布对比通用函数：
+      - `metrics.py`：`compute_mmd()`（RBF核最大均值差异）、`compute_wasserstein()`（1D Wasserstein距离）、
+        `compute_coverage()`（分位数覆盖率）、`compute_ood_ratio()`（分布外检测比例）。
+      - `visualization.py`：`plot_coverage_comparison()`、`plot_distribution_overlap()`、
+        `plot_ood_detection()`、`plot_representativeness_summary()`，支持中文字体渲染。
+    - notebook 新增第 14 节"训练集代表性评估：以真实数据为参考分布"（6 代码单元格 + 2 markdown 单元格）：
+      - 以真实数据 719,550 条为参考分布，评估训练集（噪声 5,293 + 断丝 5,293）的覆盖能力。
+      - 计算 5 个特征的 MMD、Wasserstein 距离、覆盖率（P10/P25/P50/P75/P90）、OOD 比例。
+      - 生成 4 张可视化图：覆盖率对比柱状图、分布重叠 KDE 图、OOD 检测结果、综合评估面板。
+      - 图表保存至 `outputs/training_set_coverage_comparison.png`、`outputs/distribution_overlap_comparison.png`、
+        `outputs/ood_detection_results.png`、`outputs/representativeness_summary.png`。
+    - 关键发现：
+      - 训练集噪声 SC_mean 覆盖率 0%、OOD 比例 100%，说明训练集"噪声"与真实工况"噪声"本质不同。
+      - 训练集断丝在 epsilon_2x 覆盖率 100%、SC_res_mean 覆盖率 99.49%，部分特征覆盖较好。
+      - 证实模型泛化失败根因：训练集分布与真实数据分布差异过大，决策边界失效。
+    - 自检记录：
+      - 所有 Python 文件以 `encoding='utf-8'` 编写，未使用终端重定向；
+      - 中文文本自检未发现 `'?'` 乱码占位；
+      - 模块导入与函数调用独立验证通过，4 张图正常生成。
+    - GitHub 上传日志：
+      - 待提交到本地 `master` 分支；
+      - 待推送到 `origin/master`。
