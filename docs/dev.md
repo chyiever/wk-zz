@@ -327,3 +327,28 @@
 - GitHub 上传日志：
   - 待提交到本地 `master` 分支；
   - 待推送到 `origin/master`。
+
+## 2026-05-28（2.5 最不重要特征排序）
+
+- 本次更新范围：`notebooks/2026-05-17_cross_condition_experiment.ipynb`、`tools/insert_sec25.py`、`docs/dev.md`。
+- 任务背景：
+  - 在 2.2 RFECV 和 2.4 跨数据集筛选的基础上，添加 2.5 节，将全量特征按重要性**升序**排列，给出最不重要的 10 / 50 / 100 / 200 个特征组。
+- 程序更新日志：
+  - `2026-05-17_cross_condition_experiment.ipynb` 在 2.4 节最后一个 Cell（id=a57d1771）之后插入 3 个新 Cell：
+    - `sec25_least_important_md`（markdown）：2.5 节说明，含目的、输入、输出描述。
+    - `sec25_least_important_code`（code）：
+      - Step 1：聚合 Stage-A 全量评分（`stage_a_scores`），兼容多种列名。
+      - Step 2：聚合 RFECV ranking（取最大 Top-K 结果覆盖最多特征）。
+      - Step 3：对两个分数 min-max 归一化后平均，得 `combined_importance`（越小越不重要）。
+      - Step 4：升序排列输出 `least_important_df`，并按 10/50/100/200 阈值打印特征列表。
+    - `sec25_least_important_viz`（code）：
+      - 图 1：全量特征综合重要性曲线（升序），标注四个阈值竖线。
+      - 图 2：最不重要 Top-20 横条形图。
+  - 新建 `tools/insert_sec25.py`：以 `encoding='utf-8'` 读写 `.ipynb`，不使用终端重定向。
+- 自检记录：
+  - notebook 由 Python 脚本以 `encoding='utf-8'` 读写，未使用终端重定向；
+  - 新增 3 个 Cell 中文本自检：0 个替换字符（\ufffd），编码正确；
+  - Cell 26/27/28 UTF-8 字节序列验证通过。
+- GitHub 上传日志：
+  - 已提交到本地 `master` 分支；
+  - 已推送到 `origin/master`（以终端 push 结果为准）。
