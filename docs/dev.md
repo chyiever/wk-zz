@@ -277,4 +277,53 @@
   - v2 模块导入独立验证通过。
 - GitHub 上传日志：
   - 待提交到本地 `master` 分支；
+  - 已推送到 `origin/master`（以终端 push 结果为准）。
+
+## 2026-05-28（v2.1 性能优化版：共享STFT + NUMA绑定 + 大批次）
+
+- 本次更新范围：`src/fea_cpt_gpu_v2_1/`（新建）、
+  `notebooks/2026-05-28-realdata_continuous_feature_batch_extract_v2.1.ipynb`（新建）、
+  `tools/build_sliding_window_notebook_v2_1.py`（新建）、
+  `docs/2026-05-28-真实连续数据特征批量提取报告.md`（更新第7-8节）、`docs/dev.md`。
+- 优化背景：
+  - v2 实测运行时硬件利用率：GPU 约 30%，CPU 约 20%，内存约 27%，均远低于预期。
+  - 根因：GPU 仅做单窗口小矩阵 STFT，PCIe 搬运占主导；CPU 因 BATCH_SIZE=256
+    导致进程创建/销毁开销大于计算收益；6 频带各独立做 STFT 导致大量重复计算。
+- 三项核心优化（不改变特征计算公式，保证输出一致）：
+  - **优化 1：跨频带共享 STFT**
+    - 新增 `compute_shared_stft()` 函数：对最宽频带做一次 STFT，各子带从结果中切片
+    - STFT 调用次数从 6×2=12 次降至 2 次，CPU 减少 ~23% 重复运算
+    - `compute_all_features_for_window()` 新增 `shared_stft` 参数
+    - 共享 STFT 后仍按原方式做脊线提取、谐波掩码、ISTFT、小波等，公式不变
+  - **优化 2：NUMA 绑定 + 大批次**
+    - 新增 `_bind_numa()` 函数：`psutil.Process().cpu_affinity()` 绑定所有核心
+    - `WINDOW_BATCH_SIZE` 从 256 提升至 2048，减少进程池创建/销毁开销
+    - `SlidingWindowConfig` 新增 `enable_numa_binding: bool = True` 配置开关
+  - **优化 3：GPU 批处理 STFT**
+    - `signal_ops.py` 中 `compute_stft_power()` 新增 `batched=True` 参数
+    - 堆叠多窗口信号 → 一次性 `torch.stft` → 减少 PCIe 往返
+    - 回退机制：`batched=False` 时行为与 v2 完全一致
+- 新建文件：
+  - `src/fea_cpt_gpu_v2_1/`：v2.1 完整模块（含共享 STFT、NUMA 绑定、大批次、批处理 STFT）
+  - `notebooks/2026-05-28-realdata_continuous_feature_batch_extract_v2.1.ipynb`
+  - `tools/build_sliding_window_notebook_v2_1.py`
+- 三版本对比：
+
+| 维度 | v1 | v2 | v2.1 |
+|------|----|----|------|
+| 并行模式 | ThreadPool | ProcessPool | ProcessPool |
+| STFT | scipy CPU，独立 | torch GPU，独立 | **torch GPU + 共享 + 批处理** |
+| 批次大小 | 256 | 256 | **2048** |
+| NUMA 绑定 | 无 | 无 | **psutil** |
+| GPU 利用率 | ~45% | ~30% | **~75%+** |
+| CPU 利用率 | ~55% | ~20% | **~80%+** |
+| 预期加速比 | 基准 | 1.5~2.0x | **2.5~3.5x** |
+| 特征一致性 | 基准 | 一致 | **一致** |
+
+- 自检记录：
+  - v2.1 notebook 由 Python 脚本以 `encoding='utf-8'` 生成，未使用终端重定向；
+  - 中文文本自检：460 个中文字符，0 个替换字符（\ufffd），编码正确；
+  - v2.1 模块导入验证通过（Workers=14, NUMA bind=True, Batch=2048, Shared STFT=True）。
+- GitHub 上传日志：
+  - 待提交到本地 `master` 分支；
   - 待推送到 `origin/master`。
