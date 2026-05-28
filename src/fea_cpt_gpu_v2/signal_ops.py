@@ -25,7 +25,8 @@ def _init_gpu_stft():
     if _torch is not None:
         return _torch_available
     try:
-        import torch as _torch
+        import torch
+        _torch = torch
         if torch.cuda.is_available():
             _device = torch.device('cuda')
             _torch_available = True
