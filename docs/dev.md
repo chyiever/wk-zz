@@ -36,9 +36,59 @@
   - notebook 由 Python 脚本以 `encoding='utf-8'` 重新生成；
   - 关键配置与函数存在：`USE_TRAINED_THRESHOLD`、`load_trained_threshold`、`threshold_in_use`；
   - 中文文本自检未发现 `'?'` 乱码占位。
-- GitHub 上传日志：
+  - GitHub 上传日志：
   - 已提交到本地 `master` 分支；
   - 已推送到 `origin/master`（以终端 push 结果为准）。
+
+## 2026-09-06
+
+- 本次更新范围：`notebooks/DATA09_v0-qj_sample_label_normalization.ipynb`、`tools/build_data09_qj00_label_normalization_notebook.py`、`DATA09/v0-qj/*.npz`、`docs/dev.md`。
+- 任务背景：
+  - `DATA09/v0-qj` 目录内同一批缺陷程度样本存在两种标注：历史旧标注 `QJ` 与标准标注 `QJ00`。
+  - 后续特征提取、训练集划分和跨工况统计需要样本标签一致，避免同一类别被拆成两个类别。
+- 程序更新日志：
+  - 新增样本标签规范化 notebook `DATA09_v0-qj_sample_label_normalization.ipynb`：
+    - 采用“扫描目录 -> 预演计划 -> 重名检查 -> 执行规范化 -> 复核状态”的流程；
+    - 配置区集中放置 `DATA_DIR`、`OLD_LABEL`、`NEW_LABEL`、`DRY_RUN`、`ALLOW_OVERWRITE`，便于迁移到其他目录；
+    - 对文件名只匹配 `QJ-` 前缀并改为 `QJ00-`，避免误伤 `QJ05`、`QJ001` 等不同标签；
+    - 对 `.npz` 内部头信息同步修改顶层 `type` 字段和 `data_info["sample_type"]` 字段；
+    - 写回 `.npz` 时使用同目录临时文件和 `os.replace()` 替换，减少中途失败导致半写入文件的风险；
+    - notebook 以注释和迁移说明为主，保留默认 `DRY_RUN=True`，后续迁移时先预演再执行。
+  - 新增 notebook 生成脚本 `tools/build_data09_qj00_label_normalization_notebook.py`，用于以 UTF-8 稳定重建上述 notebook。
+- 数据迁移结果：
+  - 扫描 `.npz` 文件总数：108 个；
+  - 文件名规范化：66 个 `QJ-FIP-*.npz` 已改名为 `QJ00-FIP-*.npz`；
+  - 文件内头信息规范化：66 个顶层 `type=QJ` 已改为 `QJ00`，66 个 `data_info.sample_type=QJ` 已改为 `QJ00`；
+  - 执行后复核：`QJ-FIP-*.npz` 数量为 0，`QJ00-FIP-*.npz` 数量为 108，内部 `type=QJ` 与 `data_info.sample_type=QJ` 残留均为 0。
+- 自检记录：
+  - 已用 Python 读取所有 `DATA09/v0-qj/*.npz` 复核文件名、顶层 `type` 和 `data_info.sample_type`；
+  - 已执行 `python -m py_compile tools\build_data09_qj00_label_normalization_notebook.py`，生成脚本语法检查通过；
+  - 已用 `json.load()` 校验 notebook JSON 可正常读取。
+
+- 补充更新（同日）：头文件完整性检查功能。
+  - 更新范围：`notebooks/DATA09_v0-qj_sample_label_normalization.ipynb`、`tools/build_data09_qj00_label_normalization_notebook.py`、`outputs/DATA09_v0-qj_header_audit.csv`、`docs/dev.md`。
+  - notebook 新增“头文件完整性检查”章节，用于批量审计所有 `.npz` 的头文件/元数据字段，检查只读数据，不修改样本文件。
+  - 审计字段包括：
+    - 必需键：`phase_data`、`channels`、`channel_names`、`channel_count`、`sample_rate`、`comm_count`、`npts`、`timestamp`、`starttime`、`arrival_time`、`type`、`data_info`；
+    - 初至时间：`arrival_time` 是否存在、是否可解析、是否落在 `starttime` 到 `starttime + duration` 的片段范围内；
+    - 时长：`data_info.duration_seconds` 是否约等于 `npts / sample_rate`；
+    - 点数：`npts`、`comm_count`、`data_info.npts`、`data_info.length` 与 `phase_data.shape[0]` 是否一致；
+    - 通道：`channel_count`、`data_info.channel_count`、`channel_names` 数量与 `phase_data.shape[1]` 是否一致；
+    - 标签：文件名前缀、顶层 `type` 与 `data_info.sample_type` 是否一致。
+  - 审计输出：`outputs/DATA09_v0-qj_header_audit.csv`，包含每个文件的核心头信息、时长、初至时间相对片段起点的偏移秒数、异常类型 `issues` 与异常数量 `issue_count`。
+  - 当前审计结果：
+    - 审计文件数：108；
+    - 异常文件数：0；
+    - 采样率分布：108 个文件均为 `1000000.0 Hz`；
+    - `npts` 范围：288059 到 400001；
+    - `duration_seconds` 范围：0.288059 到 0.400001；
+    - 初至时间相对片段起点偏移范围：0.0812 s 到 0.2235 s；
+    - 未发现缺失字段、时长不一致、初至时间解析失败、初至时间越界、点数/通道/标签不一致问题。
+  - 补充修复：修复从 `notebooks/` 目录启动 notebook 时审计单元可能报 `KeyError: 'issue_count'` 的问题。
+    - 原因：相对路径 `DATA09/v0-qj` 在 `notebooks/` 工作目录下会被解析为 `notebooks/DATA09/v0-qj`，导致没有扫到 `.npz`，`DataFrame` 为空且没有 `issue_count` 列。
+    - 修复：配置区新增 `find_project_root()`，从当前工作目录向上查找包含 `DATA09` 的项目根目录，再拼接相对数据目录。
+    - 修复：审计单元新增空目录保护；若没有找到 `.npz`，直接抛出带 `DATA_DIR` 的明确 `FileNotFoundError`，不再继续访问空表列。
+    - 验证：分别从 `E:\codes\ZZ-BK` 与 `E:\codes\ZZ-BK\notebooks` 作为工作目录测试，均能解析到 `E:\codes\ZZ-BK\DATA09\v0-qj` 并找到 108 个 `.npz`。
 
 - 补充修复（同日）：
   - 问题：当 `EXPERIMENTS` 配置为单个字符串（如 `exp_07_train_F130_F130A_F130C`）时，旧逻辑会按字符迭代，导致误访问 `...\\e\\selected_features.csv` 并报 `FileNotFoundError`。
@@ -470,3 +520,376 @@
 - GitHub 上传日志：
   - 待提交到本地 `master` 分支；
   - 待推送到 `origin/master`。
+
+## 2026-09-05（DATA09 v0-flow 多目录批处理、CPU回退与断点日志）
+
+- 本次更新范围：
+  - `notebooks/DATA09_v0-flow_feature_extraction.ipynb`
+  - `src/fea_cpt_gpu_v2_2/signal_ops.py`
+  - `docs/dev.md`
+- 任务背景：
+  - flow 连续数据特征提取 notebook 需要支持一次输入多个文件夹路径并依次处理。
+  - 运行环境可能没有 GPU，需要确保没有 CUDA 时可走 CPU 路径继续处理。
+  - 长时间批处理可能中断，需要保存已处理文件日志，重跑时跳过相同数据文件。
+- Notebook 更新：
+  - 新增 `RAW_DATA_ROOT_SPECS` 配置，每个输入路径可单独设置随机抽取比例：
+    `(路径, ratio)`，其中 `0 < ratio <= 1`，`1.0` 表示处理该路径下全部文件。
+  - 新增 `parse_input_specs()`，自动校验抽取比例、去重输入路径，并生成 `RAW_DATA_SPECS` / `RAW_DATA_ROOTS`。
+  - `discover_source_files([root])` 会按每个根路径分别递归查找 `.npz/.tdms`，随后对该路径下文件单独抽样。
+  - 新增 `sample_files_for_root()`，使用 `FILE_SAMPLE_SEED + root_index` 为每个路径生成可复现随机抽样结果。
+  - 删除原先单一全局 `FILE_SAMPLE_RATIO` 的使用，避免不同数据路径只能使用同一个抽样比例。
+  - 批处理单元提示进度条统计范围：进度条覆盖所有输入文件夹合并后的全部待处理文件。
+  - 输出目录由原来的每次时间戳目录调整为：
+    - 固定根目录：`outputs/DATA09_v0-flow_features/`
+    - 单次运行目录：`outputs/DATA09_v0-flow_features/run_YYYYmmdd_HHMMSS/`
+  - 断点日志固定保存到：
+    `outputs/DATA09_v0-flow_features/_process_logs/processed_source_files.txt`
+  - 数据发现阶段会读取上述断点日志，先过滤已处理文件，再执行本次处理。
+  - 批处理阶段不再将 `processed_source_files.txt` 重命名为带时间戳文件，保证下次运行可继续复用。
+  - 结果汇总和运行日志单元改为读取 `RUN_OUTPUT_ROOT` 与稳定断点日志路径。
+- CPU/GPU 更新：
+  - notebook 中明确 `FEA_CPT_USE_GPU` 语义：`1` 表示有 CUDA 时优先 GPU；`0/false/off/no` 表示强制 CPU。
+  - `src/fea_cpt_gpu_v2_2/signal_ops.py` 的 torch STFT 初始化新增环境变量判断；
+    当 `FEA_CPT_USE_GPU=0/false/off/no` 时不初始化 GPU STFT。
+  - 无 CUDA 时原有 `_init_gpu_stft()` 会将 `_torch_available=False`，`compute_stft_power()` 自动使用 scipy CPU STFT。
+- 断点续跑行为：
+  - 每个源文件成功写入特征 CSV 和窗口日志 CSV 后，底层 `build_sliding_window_dataset()` 追加该文件完整路径到 `processed_source_files.txt`。
+  - 程序中断后重新运行 notebook，会先按每个路径比例重新得到可复现抽样文件集合，再跳过日志中已有的源文件，只处理剩余文件。
+  - 新一次运行仍会创建新的 `run_YYYYmmdd_HHMMSS` 输出目录，避免把新旧结果 CSV 追加混在一起。
+- 总进度条更新：
+  - `build_sliding_window_dataset()` 的 `tqdm` 文件进度条改为 `处理全部文件`，总数为所有输入路径合并后的待处理文件数。
+  - 进度条单位为 `file`，并在 postfix 中动态显示：
+    - `已处理`
+    - `跳过`
+    - `失败`
+    - `平均`每文件耗时
+    - `预计总用时`
+    - `剩余`预计用时
+  - 预计总用时和剩余时间根据当前已完成文件的平均耗时实时更新，适合跨多个文件夹的长任务监控。
+- 自检记录：
+  - 已执行 notebook JSON 机械改写，清理了相关单元的旧执行输出。
+  - `python -m py_compile src\fea_cpt_gpu_v2_2\signal_ops.py` 通过。
+  - `notebooks/DATA09_v0-flow_feature_extraction.ipynb` JSON 解析检查通过。
+- GitHub 上传日志：
+  - 未提交，待用户确认。
+
+- 补充更新（同日）：多标签批量处理与按数据文件分片输出。
+  - 更新范围：`notebooks/DATA09_single_event_feature_extract.ipynb`、`docs/dev.md`。
+  - notebook 配置由单一 `DATA_ROOT`/`LABEL` 改为 `DATASETS` 列表，可一次运行同时处理多个标签目录，当前默认包含 `BK00`、`QJ00`、`BK05`、`QJ05`。
+  - 新增 `MAX_FILES_PER_OUTPUT = 100`，输出拆分粒度按“源 `.npz` 数据文件数”计算，而不是按截取窗口生成的特征行数计算。
+  - 数据发现阶段为每个标签内的源文件分配 `file_index_in_label` 与 `output_part`；批处理生成的每行特征同步写入 `source_file_index_in_label` 和 `output_part`，便于追溯输出分片。
+  - 结果存储阶段按 `label + output_part` 分组写出 `features_{label}_{timestamp}_partXXX.csv`；每个标签只要存在有效特征行，至少生成一个输出 CSV；同一标签超过 100 个源数据文件时自动生成 `part002`、`part003` 等后续文件。
+  - 同步更新 notebook 开头说明、架构说明和质量检查元数据列定义，避免仍提示只能通过单个 `DATA_ROOT`/`LABEL` 切换标签。
+- 自检记录：
+  - 已用 `json.load()` 校验 `notebooks/DATA09_single_event_feature_extract.ipynb` 可正常解析。
+  - 已对 notebook 全部代码单元执行 `ast.parse` 静态语法检查，检查通过。
+  - 已确认旧的 `MAX_ROWS_PER_OUTPUT` 不再存在，当前切分变量为 `MAX_FILES_PER_OUTPUT`。
+
+- 补充优化（同日）：分析并优化 single-event notebook 的 CPU/GPU 利用率。
+  - 问题原因：
+    - `DATA09_v0-flow_feature_extraction.ipynb` 调用 v2.2 连续滑窗流水线 `build_sliding_window_dataset()`，单个连续文件可产生大量窗口，底层具备持久进程池、文件预加载、批量 STFT 与分片写盘能力，因此 CPU/GPU 更容易被持续喂满。
+    - `DATA09_single_event_feature_extract.ipynb` 原实现是在 notebook 主进程中按 `文件 -> 3 个到时截取窗口 -> 特征计算` 串行执行；每个源文件只有 3 个短窗口，GPU STFT 任务过小且频繁启动，CPU 也被限制在单进程循环中，导致整体利用率低于 flow notebook。
+    - single-event 数据不能直接套用 flow 的固定步长滑窗流水线，否则会丢失基于 `arrival_time` 的三种到时窗口语义。
+  - 优化内容：
+    - 新增 `FILE_WORKERS = None`，默认使用 `_auto_detect_workers()` 自动决定文件级并行进程数。
+    - 新增 `ENABLE_SHARED_STFT = False`，默认关闭单事件短窗口的 GPU/shared STFT 路径，避免 3 个 30 ms 短窗口反复触发小 GPU 任务造成调度开销大于收益；如机器实测 GPU 更快，可手动改为 `True`。
+    - 使用 `joblib.Parallel(n_jobs=max_workers, prefer='processes')` 对源 `.npz` 文件做文件级多进程并行，保持每个文件内部仍按 `arrival_time` 生成三种截取窗口。
+    - 新增 `get_params_map()` 并用 `lru_cache` 缓存同采样率下的频带参数，减少每个窗口重复构造参数的开销。
+    - 批处理结果按 `label`、`source_file_index_in_label`、`window_mode` 排序，保证多进程返回顺序不影响输出 CSV 的可读性和可复现性。
+    - notebook 架构说明中补充了 single-event 与 flow notebook 利用率差异的原因，以及短事件数据更适合文件级 CPU 并行而非强行追求 GPU 占满的原因。
+  - 自检记录：
+    - 已用 `json.load()` 校验 notebook JSON 可正常解析。
+    - 已对 notebook 全部代码单元执行 `ast.parse` 静态语法检查，检查通过。
+    - 已确认 notebook 中不再使用标准库 `ProcessPoolExecutor`，避免 Windows/Jupyter 下 notebook 内函数不可 pickle 的兼容性风险；当前使用 joblib loky 进程后端。
+
+- 补充修复（同日）：修复 joblib 子进程反序列化失败。
+  - 问题现象：运行批处理单元时出现 `BrokenProcessPool: A task has failed to un-serialize`，远端报错为 `AttributeError: Can't get attribute 'get_params_map' on <module '__main__'>`。
+  - 原因：Windows/Jupyter 环境中，joblib loky 子进程不能稳定从 notebook 的 `__main__` 内存态反序列化自定义函数，尤其是 `get_params_map`、`process_event_record` 这类在 notebook 单元中定义并被 worker 闭包引用的函数。
+  - 修复：
+    - 新增模块 `src/data09_single_event.py`，将 `parse_npz_ts()`、`load_npz_channel()`、`get_cut_windows()`、`compute_features_for_window()`、`process_event_record()` 和参数缓存 `_get_params_map()` 移入可导入的 Python 模块。
+    - notebook 改为从 `data09_single_event` 导入模块级 worker；joblib 多进程路径直接调用 `_process_event_record`，不再提交 notebook 内定义的 wrapper 函数。
+    - 保留 notebook 内轻量 wrapper 仅用于单文件 smoke test 和交互调用；多进程批处理不再依赖 `__main__` 函数。
+  - 自检记录：
+    - `python -m py_compile src\data09_single_event.py` 通过。
+    - `notebooks/DATA09_single_event_feature_extract.ipynb` JSON 解析和全部代码单元 `ast.parse` 通过。
+    - 已用 1 个 `DATA09/v05-bk` 源 `.npz` 文件执行 `joblib.Parallel(n_jobs=2, prefer='processes')` 小批验证，子进程可正常导入模块级 worker，返回 1 行测试特征且无错误。
+
+- 补充优化（同日）：整理 notebook 结构、按文件即时落盘并生成本地处理日志。
+  - 更新范围：`notebooks/DATA09_single_event_feature_extract.ipynb`、`src/data09_single_event.py`、`docs/dev.md`。
+  - notebook 结构整理：
+    - 补充一级标题和二级标题，当前章节包括：概览、环境初始化、全局配置、源文件发现、头文件检查、单文件 smoke test、增量输出工具、按文件持久化批处理、输出汇总、特征质量检查、架构与性能说明。
+    - 删除 notebook 内旧的事件处理 wrapper 函数定义，避免与 `src/data09_single_event.py` 中的模块级 worker 重复。
+    - notebook 仅保留必要的输出辅助函数，例如 `output_csv_for()`、`append_dataframe_csv()`、`append_process_log()`、`persist_one_file_result()`。
+  - 即时落盘：
+    - 批处理单元由“全部处理完成后统一保存”改为“每个源 `.npz` 文件处理完成后立即追加写入对应 CSV”。
+    - 输出 CSV 仍按 `label + output_part` 分片，`output_part` 按同一标签内每 100 个源数据文件计算。
+    - 新增 `OVERWRITE_CURRENT_RUN_OUTPUTS = True`，重新运行当前 `RUN_TIMESTAMP` 的批处理单元时会先清理同一时间戳的输出 CSV 和处理日志，避免重复追加。
+  - 本地处理日志：
+    - 新增本地日志文件：`outputs/DATA09_multi_label_single_event_features/_process_logs/process_log_{RUN_TIMESTAMP}.csv`。
+    - 每处理完一个源文件追加一行日志，记录 `processed_at`、`run_timestamp`、`label`、`source_file_name`、`source_file_path`、`output_part`、`output_csv`、`status`、`feature_rows`、`elapsed_s`、`error`。
+    - 成功、失败、空结果都会写入日志，便于追溯什么时间处理了哪些文件以及写入哪个输出文件。
+  - 并行与日志修复：
+    - `src/data09_single_event.py` 新增 `process_event_record_timed()`，在模块级 worker 中记录单文件耗时，保证 joblib 子进程返回后日志可写入 `elapsed_s`。
+    - joblib 使用 `return_as='generator_unordered'`，worker 完成一个源文件就返回一个结果，notebook 随即落盘并写日志，不再等待全部文件结束。
+  - 自检记录：
+    - `python -m py_compile src\data09_single_event.py` 通过。
+    - `notebooks/DATA09_single_event_feature_extract.ipynb` JSON 解析和全部代码单元 `ast.parse` 通过。
+    - 已用 2 个 `DATA09/v05-bk` 源 `.npz` 文件执行 `joblib.Parallel(n_jobs=2, prefer='processes', return_as='generator_unordered')` 小批验证，均返回 1 行测试特征、无错误且 `elapsed_s` 有效。
+
+- 补充更新（同日）：中文注释与中文说明。
+  - 按用户要求，将 `notebooks/DATA09_single_event_feature_extract.ipynb` 中面向使用者的一级标题、二级标题、说明文本、必要代码注释和打印提示改为中文。
+  - 保留变量名、函数名、CSV 字段名和状态值等程序接口不变，避免影响后续脚本读取和结果兼容性。
+  - 为 `src/data09_single_event.py` 中的核心函数补充中文 docstring，说明时间解析、通道读取、到时窗口转换、特征计算、单文件处理和计时 worker 的作用。
+  - 自检记录：
+    - notebook JSON 解析和全部代码单元 `ast.parse` 通过。
+    - `python -m py_compile src\data09_single_event.py` 通过。
+    - 已确认 notebook 中英文章节标题和旧问号占位文本已清理，中文内容以 UTF-8 正常写入。
+
+- 补充更新（同日）：特征重要性 notebook 强制源文件组级 6:4 划分。
+  - 更新范围：`notebooks/DATA09_feature_importance_30ms_analysis.ipynb`、`docs/dev.md`。
+  - 任务背景：
+    - BK、QJ 单事件样本中，一个源 `.npz` 文件会围绕 `arrival_time` 在不同位置截取多个窗口，从而派生出多行特征样本。
+    - 同一源文件派生出的窗口样本具有相似性；如果按特征行随机划分，会导致同一源文件的不同窗口同时进入训练集和测试集，形成数据泄漏。
+  - 程序更新：
+    - 新增 `build_source_group_table()`，先按 `label + source_file_name` 统计源文件组，记录每个源文件组派生出的特征行数。
+    - 重写 `split_by_source_group()`：强制以 `source_file_name` 源文件组为划分单位，每个标签内按源文件组随机划分约 60% 训练、40% 测试。
+    - 删除原有行级 `train_test_split` fallback；若标签不足 2 类、某类源文件组少于 2 个，或同一 `source_file_name` 同时属于多个标签，则直接报错并要求先修正数据，而不是退化为窗口行级划分。
+    - 第 6 节划分说明明确：行数比例只作为结果统计，实际划分目标是源文件组比例；同一 `source_file_name` 的所有派生窗口必须全部进入同一个集合。
+    - 划分单元新增源文件组统计展示和泄漏校验；若训练集与测试集存在重叠源文件，直接抛出 `RuntimeError`。
+  - 新增输出：
+    - `source_group_table_{RUN_TIMESTAMP}.csv`：记录每个 `label + source_file_name` 源文件组及其派生窗口行数。
+    - `source_split_summary_{RUN_TIMESTAMP}.csv`：记录每个标签的源文件组总数、训练源文件组数、测试源文件组数和实际源文件组划分比例。
+  - 自检记录：
+    - 已用 `json.load()` 校验 notebook JSON 可正常解析。
+    - 已对 notebook 全部代码单元执行 `ast.parse` 静态语法检查，检查通过。
+    - 已确认 notebook 中不再包含 `train_test_split` 和 row-level fallback 逻辑。
+
+## 2026-09-04（DATA09 v0-flow 双通道TDMS连续特征提取 + 修复v2.2滑窗特征计算bug）
+
+- 本次更新范围：`notebooks/DATA09_v0-flow_feature_extraction.ipynb`（新建）、
+  `src/fea_cpt_gpu_v2_2/sliding_window.py`（更新）、`docs/dev.md`。
+- 任务背景：
+  - 需对 `E:\codes\ZZ-BK\DATA09\v0-flow` 目录下的连续数据做特征提取。
+  - 数据为 TDMS **双通道**文件（`SemiPhase-1MHz-2026-8-29-15-7-44.tdms`），需读取指定通道。
+  - 实际通道名：`Untitled`、`Untitled 1`（各 600 万样本，1MHz 采样率）。
+- 程序更新日志（`src/fea_cpt_gpu_v2_2/sliding_window.py`）：
+  - 支持指定TDMS通道名称：
+    - `_load_tdms_source()` 新增 `channel_name` 参数，按名称查找指定通道，找不到则回退默认选择逻辑。
+    - `load_source_file()` 新增 `tdms_channel_name` 参数并透传。
+    - `process_source_file()` 读取 `config.tdms_channel_name` 传入加载。
+    - `SlidingWindowConfig` 新增 `tdms_channel_name: str | None = None` 字段。
+    - 所有新增参数均有 `None` 默认值，向后兼容，原notebook行为不变。
+  - **修复特征计算bug（关键）**：
+    - 问题1：共享STFT路径使用 `FeatureContext` 但模块只导入了 `FeatureRecord`，
+      导致每窗口特征计算抛 `NameError: name 'FeatureContext' is not defined`，
+      被 `except` 捕获后返回空特征，输出只剩 21 个元数据列（无任何特征列）。
+    - 修复1：`from .base import FeatureContext, FeatureRecord`。
+    - 问题2：共享STFT路径中 `context.residual_power` 为全频带（513）维，
+      而 `context.stft_freqs/stft_power` 为子带切片维，`_band_mask` 布尔索引维度不匹配，
+      抛 `IndexError: boolean index did not match indexed array along dimension 0`。
+    - 修复2：将 `residual_power` 按其频带掩码切到与 `stft_freqs/stft_power` 相同维度。
+  - 验证：单窗口 6 频带计算得到 `6 × 80 = 480` 个特征列（+21 元数据列 = 501 列），
+    对应 `docs/chatgpt-特征汇总.md` 中实现的特征集合。
+- 新建 `notebooks/DATA09_v0-flow_feature_extraction.ipynb`：
+  - 结构参照 `2026-05-28-realdata_continuous_feature_batch_extract_v2.2.ipynb`。
+  - 配置 `RAW_DATA_ROOTS = [E:\codes\ZZ-BK\DATA09\v0-flow]`。
+  - `TARGET_CHANNEL_NAME = 'Untitled'`（指定读取的通道）。
+  - 关闭文件级降采样（数据量小）。
+  - `TDMS_FALLBACK_SAMPLE_RATE_HZ = 1_000_000.0`（1MHz）。
+- 自检记录：
+  - 依赖的滑动窗口模块导入验证通过。
+  - 单窗口特征计算（共享STFT路径）验证通过，6 频带共 480 个特征。
+- GitHub 上传日志：
+  - 未提交，待用户确认。
+
+## 2026-09-04（DATA09 30ms 三分类特征重要性排序与可视化开发）
+
+- 本次更新范围：
+  - `tools/data09_feature_importance_pipeline.py`（新增）
+  - `notebooks/DATA09_feature_importance_30ms_analysis.ipynb`（新增）
+  - `docs/dev.md`（更新）
+- 任务目标：
+  - 使用用户指定的 8 个频带重新计算 DATA09 三类样本特征：`flow`、`bk`、`qj`。
+  - 统一窗口长度为 30 ms。
+  - 在特征重要性排序前，将特征集按源文件分组划分为 6:4 两部分，前 60% 用于排序/训练，后 40% 用于测试验证。
+  - 排序集与测试集使用 `source_file_name` 分组划分，确保两者无同一源文件交集。
+  - 输出重要性排序图、测试集混淆矩阵、高重要性特征在三类样本上的分布图，并保存测试结果。
+- 频带配置：
+  - `b_1k_100k`: 1 kHz - 100 kHz
+  - `b_1k_10k`: 1 kHz - 10 kHz
+  - `b_10k_20k`: 10 kHz - 20 kHz
+  - `b_20k_30k`: 20 kHz - 30 kHz
+  - `b_30k_40k`: 30 kHz - 40 kHz
+  - `b_40k_60k`: 40 kHz - 60 kHz
+  - `b_10k_50k`: 10 kHz - 50 kHz
+  - `b_1k_50k`: 1 kHz - 50 kHz
+- 程序实现：
+  - `tools/data09_feature_importance_pipeline.py` 集成完整流程：
+    - `extract_flow_features()`：对 `DATA09/v0-flow` TDMS 连续数据按 30 ms、0 重叠滑窗提取特征。
+    - `extract_event_features()`：对 `DATA09/v0-bk`、`DATA09/v0-qj` npz 事件数据按到时截取 30 ms 窗口提取特征。
+    - 事件窗为 `[-10, 20] ms`、`[0, 30] ms`、`[5, 35] ms`；其中第三个窗口按“每个窗口长度30ms”要求从原先容易产生 25 ms 的 `[5, 30] ms` 修正为 `[5, 35] ms`。
+    - `split_by_source()`：按类别内源文件随机 6:4 划分，固定 `seed=42`。
+    - `run_importance()`：使用 `RandomForestClassifier(class_weight='balanced')` 在排序集训练，并在测试集计算 permutation importance、分类报告和混淆矩阵。
+  - 支持完整运行：
+    - `python tools\data09_feature_importance_pipeline.py`
+  - 支持本地快速抽样验证参数：
+    - `--max-flow-files`
+    - `--max-flow-windows-per-file`
+    - `--max-event-files-per-class`
+- 输出位置：
+  - 合并特征：`outputs/DATA09_feature_importance_30ms/data09_all_features_30ms.csv`
+  - bk 特征：`outputs/DATA09_feature_importance_30ms/features/DATA09_v0-bk_features_30ms.csv`
+  - qj 特征：`outputs/DATA09_feature_importance_30ms/features/DATA09_v0-qj_features_30ms.csv`
+  - flow 特征：`outputs/DATA09_feature_importance_30ms/features/DATA09_v0-flow_features_30ms/features_all.csv`
+  - 带划分标记数据集：`outputs/DATA09_feature_importance_30ms/analysis/data09_feature_dataset_with_split.csv`
+  - 特征重要性表：`outputs/DATA09_feature_importance_30ms/analysis/feature_importance.csv`
+  - 测试摘要：`outputs/DATA09_feature_importance_30ms/analysis/summary.json`
+  - 重要性排序图：`outputs/DATA09_feature_importance_30ms/analysis/feature_importance_top20.png`
+  - 测试集混淆矩阵：`outputs/DATA09_feature_importance_30ms/analysis/confusion_matrix.png`
+  - Top 特征分布图：`outputs/DATA09_feature_importance_30ms/analysis/top_feature_distributions.png`
+- 新建 notebook：
+  - `notebooks/DATA09_feature_importance_30ms_analysis.ipynb`
+  - notebook 中保留快速抽样测试命令和完整重新计算命令，并读取脚本输出的 CSV/JSON/PNG 进行展示。
+- 自检记录：
+  - `python -m py_compile tools\data09_feature_importance_pipeline.py` 通过。
+  - 依赖检查：`sklearn`、`seaborn`、`nptdms` 可导入。
+  - 本地执行抽样测试时，单窗口 8 频带全量特征计算耗时较高；在当前对话工具 180 秒超时限制内未能完成首批结果落盘。
+  - 因此本次已完成程序开发、语法验证、notebook 与文档更新；完整特征重算和结果图生成需要在本机终端或 notebook 中以不限时方式运行上述完整命令。
+
+## 2026-09-04（DATA09 已提取特征CSV的重要性排序与6:4测试验证优化）
+
+- 本次更新范围：
+  - `notebooks/DATA09_feature_importance_30ms_analysis.ipynb`（重构）
+  - `docs/dev.md`（更新）
+
+- 背景：
+  - 已通过 `DATA09_single_event_feature_extract.ipynb` 完成 BK00 / QJ 离散事件样本特征计算。
+  - 已通过 `DATA09_v0-flow_feature_extraction.ipynb` 完成 flow 连续样本特征计算。
+  - 原 `DATA09_feature_importance_30ms_analysis.ipynb` 偏向重新计算三类特征，不适合直接复用已经生成的 CSV 结果。
+
+- 主要优化：
+  - 将 `DATA09_feature_importance_30ms_analysis.ipynb` 改为“读取已生成特征 CSV 后分析”的轻量流程，不再强制调用 `tools/data09_feature_importance_pipeline.py` 重新计算原始信号特征。
+  - 在 `FEATURE_FILES` 中显式配置 flow、BK00、QJ 三类特征 CSV 路径；程序会自动跳过重复输入路径并打印警告。
+  - 对不同来源 CSV 自动识别标签：
+    - 优先读取 `label` 列；
+    - 其次读取 `sample_type` 列；
+    - 若缺失，则按路径关键字 `flow` / `BK00` / `QJ` 推断。
+  - 自动取所有输入 CSV 的共同数值特征列，排除 `source_file_name`、`window_id`、`window_mode`、`sample_rate_hz` 等元数据字段，解决 flow CSV 与 BK00/QJ CSV 元数据列不完全一致的问题。
+  - 明确先按 6:4 比例划分数据：
+    - 60% 数据用于训练和特征重要性排序；
+    - 40% 数据用于独立测试验证。
+  - 划分策略优先使用 `source_file_name` 分组，避免同一源文件的不同窗口同时出现在训练集和测试集，降低数据泄漏风险。
+  - 若某类源文件数不足以做源文件级分组划分，程序会降级为行级 stratified split，并明确输出警告。
+
+- Notebook 文档结构：
+  - 增加中文一级标题：`DATA09 特征重要性排序与 6:4 测试验证`。
+  - 参照 `notebooks/2026-05-17_cross_condition_experiment.ipynb` 的文档风格，在每个主要代码单元前增加中文二级标题和用途备注。
+  - 当前二级章节包括：
+    - 环境初始化
+    - 输入配置
+    - 工具函数
+    - 特征表读取与合并
+    - 数据分布与特征质量检查
+    - 6:4 训练测试划分
+    - RandomForest 训练与测试
+    - 特征重要性排序
+    - 错误样本与 Top 特征分布
+    - 输出文件清单
+
+- 输出内容：
+  - 每次运行创建带时间戳的新目录：`outputs/DATA09_feature_importance_from_csv_YYYYmmdd_HHMMSS/`。
+  - 保存合并后的特征表：`combined_features_YYYYmmdd_HHMMSS.csv`。
+  - 保存带 `split` 标记的 6:4 划分结果：`combined_features_with_split_YYYYmmdd_HHMMSS.csv`。
+  - 保存特征质量检查表：`feature_quality_YYYYmmdd_HHMMSS.csv`。
+  - 保存测试指标：`test_metrics_YYYYmmdd_HHMMSS.json`。
+  - 保存分类报告：`classification_report_YYYYmmdd_HHMMSS.csv`。
+  - 保存混淆矩阵：`confusion_matrix_YYYYmmdd_HHMMSS.csv` 和对应 PNG 图。
+  - 保存错误样本：`misclassified_samples_YYYYmmdd_HHMMSS.csv`。
+  - 保存特征重要性排序：`feature_importance_YYYYmmdd_HHMMSS.csv`。
+  - 保存类别分布图、Top-N 特征重要性图、Top 特征分布图。
+
+- 测试记录：
+  - 使用用户提供的 QJ 特征文件：
+    `outputs/DATA09_v0-qj_features_QJ/features_QJ_20260904_114606.csv`
+  - 使用用户提供的 flow 特征文件：
+    `outputs/DATA09_v0-flow_features_20260904_121425/features_20260904_121425_part_0001.csv`
+  - 用户提供的第三个路径与 flow 文件重复，程序已按设计跳过重复输入。
+  - 因本次测试输入中缺少 BK00 文件，实际验证为 QJ vs flow 二分类；notebook 已保留三分类能力，只需在 `FEATURE_FILES` 中补入 BK00 CSV。
+  - 测试读取到 640 个共同数值特征；源文件级划分后训练集与测试集 `source_file_name` 无重叠。
+- GitHub 上传日志：
+  - 未提交，待用户确认。
+
+## 2026-09-06（DATA09 特征重要性排序性能优化、结果审查与可视化增强）
+
+- 本次更新范围：
+  - `notebooks/DATA09_feature_importance_30ms_analysis.ipynb`（优化）
+  - `docs/dev.md`（更新）
+
+- 当前执行结果审查：
+  - notebook 当前配置实际只读取到 `QJ` 与 `flow` 两类样本；用户给出的第三个 CSV 路径与 flow 文件重复，程序已跳过重复输入。
+  - 当前输出显示共同数值特征为 640 个，训练集 1517 行、测试集 1081 行，源文件级 train/test 无重叠。
+  - 测试集 accuracy、balanced accuracy、macro F1、weighted F1 均为 1.0；说明当前 QJ vs flow 二分类在已有特征上非常容易，不能据此外推到 BK00/QJ/flow 三分类。
+  - 特征质量检查发现近零方差特征 18 个，高相关 Spearman 特征对 832 对；因此单个特征排名会受到强冗余影响，解释时应优先关注稳定特征组，而不是把某一个排名当作物理因果结论。
+  - 原第 8 节 CV permutation importance 和测试集 permutation importance 全部为 0。原因不是“数值太小导致画不出来”，而是在当前数据中模型分类已达到 1.0 且特征高度冗余，置换单个特征不会降低 balanced accuracy，所以条形长度确实为 0。
+
+- 第 8 节耗时原因：
+  - 原优化版使用 `CV_FOLDS=5`、`PERMUTATION_REPEATS=5`、640 个特征、5 个 RF 随机种子，并额外在测试集上做全量 permutation。
+  - permutation importance 的主要复杂度近似为：`fold 数 × 特征数 × repeats × 模型预测成本`。
+  - 仅训练集 CV permutation 就约为 `5 × 640 × 5 = 16000` 次置换预测；再加测试集全量置换约 `640 × 5 = 3200` 次预测，以及多随机种子 RF 训练，因此运行 4 分钟且 CPU 100% 是预期现象。
+
+- 性能优化策略：
+  - 默认参数从 `CV_FOLDS=5`、`PERMUTATION_REPEATS=5`、`RF_STABILITY_SEEDS=5 个` 调整为 `CV_FOLDS=3`、`PERMUTATION_REPEATS=3`、`RF_STABILITY_SEEDS=[11, 23, 37]`。
+  - 新增 `PERMUTATION_CANDIDATE_LIMIT = 80`：先用全量但快速的 RF 多随机种子稳定性和单变量 ANOVA F 检验筛候选，再只对候选特征做训练集内 CV permutation importance。
+  - 新增 `TEST_PERMUTATION_TOP_N = 30`：测试集 permutation 仅作为审计，并只计算候选 Top-N，不再扫描全部 640 个特征，保持 holdout 的验证职责。
+  - 第 8 节主图增加 fallback：若 CV permutation 全为 0，自动改画 RF 多随机种子平均重要性和标准差，避免出现空条形图。
+
+- 算法与解释增强：
+  - 新增 `compute_univariate_f_scores()`：用训练集单变量 ANOVA F 检验提供快速边际区分能力排序。
+  - 新增 `choose_permutation_candidates()`：综合 RF 稳定性排序与 F 检验排序，生成 permutation 候选特征集合。
+  - 新增 `correlation_pruned_features()`：作为一种特征排序降维方式，按重要性从高到低选择特征，并跳过与已选特征高度相关的冗余特征。
+  - 新增 `evaluate_topk_feature_sets()`：在固定 6:4 holdout 上比较不同排序/降维策略的 Top-K 分类效果，输出 `feature_ranking_topk_comparison_*.csv` 与 `feature_ranking_topk_comparison_*.png`。
+  - 对比方法包括：
+    - CV permutation 排序，若 permutation 全 0 则结合快速排序 fallback；
+    - RF 多随机种子稳定性排序；
+    - 单变量 F 检验排序；
+    - 相关性去冗余 RF 排序。
+
+- 可视化增强：
+  - 保留原第 9 节原始计数直方图 `top_feature_distributions_*.png`，用于观察绝对样本数量分布。
+  - 新增第 10 节“Top 特征分布的均衡可视化补充”，输出 `top_feature_distributions_density_ecdf_*.png`。
+  - 新图包含归一化密度直方图和 ECDF。归一化密度图让每个类别面积为 1，避免 flow 样本多、QJ/BK00 样本少时小类柱子过低；ECDF 用累计比例展示整体分布偏移，更适合类别数量不均衡场景。
+
+- 中文说明与注释：
+  - 在配置、工具函数、第 8 节排序、第 9 节错误样本与原始分布图、第 10 节均衡分布图中补充中文注释。
+  - 注释重点说明方法原理、算法流程、数据泄漏边界、permutation importance 的计算成本，以及不同图形的适用场景。
+
+- 验证记录：
+  - notebook JSON 解析和所有代码单元 `ast.parse` 通过。
+  - 使用缩小参数 smoke notebook 完整执行通过：`N_ESTIMATORS=60`、`CV_FOLDS=2`、`PERMUTATION_REPEATS=1`、`PERMUTATION_CANDIDATE_LIMIT=20`。
+  - smoke 执行生成了 `feature_importance_*.csv`、`feature_ranking_topk_comparison_*.csv/.png`、`feature_importance_top30_*.png`、`top_feature_distributions_density_ecdf_*.png` 等产物。
+  - smoke 验证中仍出现 Windows/joblib `resource_tracker` 临时文件 KeyError 警告，但 nbconvert 返回成功并写出结果；这是并行 joblib 在 Windows 上的清理警告，不影响 notebook 主要输出。
+
+## 2026-09-04（DATA09 v0-bk / v0-qj 断丝样本特征提取）
+
+- 本次更新范围：`notebooks/DATA09_single_event_feature_extract.ipynb`（新建）、`docs/dev.md`。
+- 任务背景：
+  - 需对 `E:\codes\ZZ-BK\DATA09\v0-bk`（标签 BK00）与 `v0-qj`（标签 QJ）内的离散断丝样本做特征提取。
+  - 数据为 npz，双通道（`phase_data` 维度 `(npts, 2)`），每文件为一次断丝事件的可见片段（约 0.4s）。
+  - 采样率 1MHz，`arrival_time` 为信号到达时间（到时）。
+- 数据特征（核实）：
+  - `v0-bk`：`BK00-FIP-1000K-20260829T15*.npz`（2 个文件）。
+  - `v0-qj`：`QJ-FIP-1000K-20260829T15*.npz`（2 个文件）。
+  - npz keys：`phase_data`、`channel_names`、`sample_rate`、`npts`、`starttime`、`arrival_time`、`type`、`data_info` 等。
+  - `channel_names`：`['phase_data', 'phase_data_ch2']`；`sample_rate=1_000_000 Hz`；`npts=400001`。
+- 程序更新日志（新建 notebook）：
+  - 读取指定通道波形（默认第一个通道 `phase_data[:, 0]`）。
+  - 从头文件读取 `arrival_time`，并以**到时为时间原点**（0 ms）。
+  - 以到时为原点按三种方式截取，每文件得到三个样本：`[-10 ms, 20 ms]`、`[0 ms, 30 ms]`、`[5 ms, 30 ms]`。
+  - 每截取段调用 v2.2 共享 STFT + `compute_all_features` 计算 6 频带全量特征（480 特征/段）。
+  - 存储为 CSV，逐行标注 `label`（BK00/QJ）与 `window_mode`（截取方式）。
+  - notebook 内仅需修改 `DATA_ROOT` 与 `LABEL` 即可在 v0-bk 与 v0-qj 间切换。
+- 自检记录：
+  - 批量逻辑验证：2 文件 × 3 截取窗口 = 6 样本，每样本 480+ 特征，无全 NaN。
+  - 特征计算依赖模块加载正常。
+- GitHub 上传日志：
+  - 未提交，待用户确认。
