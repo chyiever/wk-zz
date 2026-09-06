@@ -1068,3 +1068,7 @@
     - 成功读取 6 类标签，合计 180 行、632 个特征。
     - 成功生成 `feature_discrimination.csv`、`feature_stability.csv`、`cross_flow_feature.csv`、`final_feature_ranking.csv`。
   - 当前环境缺少 `tabulate`，报告生成已改为无额外依赖兜底，不再要求安装该包。
+
+- GitHub 上传日志：
+  - 已提交到本地 `master` 分支：`c37751c`。
+  - 已推送到 `origin/master`：`c37751c`。
