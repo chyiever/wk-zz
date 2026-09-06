@@ -12,6 +12,10 @@ from .feature_schema import impute_with_median, numeric_feature_frame
 
 
 COMPARISONS = {
+    "BK00_NONBK00": (("BK00",), ("FL00", "QJ00")),
+    "BK00_QJ00": (("BK00",), ("QJ00",)),
+    "BK05_QJ05": (("BK05",), ("QJ05",)),
+    "BK05_NONBK05": (("BK05",), ("FL05", "QJ05")),
     "BK_NONBK": (("BK00", "BK05"), ("FL00", "FL05", "QJ00", "QJ05")),
     "BK_QJ": (("BK00", "BK05"), ("QJ00", "QJ05")),
     "BK00_BK05": (("BK05",), ("BK00",)),

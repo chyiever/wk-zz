@@ -31,6 +31,13 @@ class MiningConfig:
     mrmr_redundancy_weight: float = 0.5
     max_correlation_rows: int = 6000
     max_plot_features: int = 24
+    distribution_top_n: int = 12
+    projection_max_rows: int = 8000
+    combination_feature_counts: tuple[int, ...] = (5, 10, 20, 30, 50)
+    sfs_candidate_count: int = 30
+    sfs_max_selected: int = 15
+    classification_feature_counts: tuple[int, ...] = (5, 10, 20, 30, 50)
+    classification_max_train_rows_per_class: int | None = 3000
     # 仅用于快速调试。正式运行保持 None，使用全部数据。
     max_rows_per_label: int | None = None
     feature_inputs: tuple[FeatureInput, ...] = field(default_factory=tuple)

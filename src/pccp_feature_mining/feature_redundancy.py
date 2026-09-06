@@ -66,10 +66,12 @@ def build_correlation_clusters(
         cid = assigned.get(feature)
         rep = representatives.get(cid, feature)
         corr_to_rep = float(corr.loc[feature, rep]) if feature in corr.index and rep in corr.columns else np.nan
-        max_corr_to_better = 0.0
+        # 非代表特征即使与代表特征相关性完全相同、判别分并列，也应受到
+        # 冗余惩罚，否则最终排序会保留大量物理含义重复的特征。
+        max_corr_to_better = abs(corr_to_rep) if feature != rep and pd.notna(corr_to_rep) else 0.0
         better = relevance[relevance > relevance.get(feature, -np.inf)].index.intersection(corr.columns)
         if len(better):
-            max_corr_to_better = float(corr.loc[feature, better].abs().max())
+            max_corr_to_better = max(max_corr_to_better, float(corr.loc[feature, better].abs().max()))
         rows.append(
             {
                 "feature": feature,

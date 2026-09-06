@@ -1063,6 +1063,7 @@
 - 验证记录：
   - `python -m py_compile src\pccp_feature_mining\*.py` 通过。
   - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` JSON 解析通过，所有代码单元 `ast.parse` 通过。
+  - 新增 `tools/build_pccp_feature_mining_notebook.py` 用 UTF-8 结构化生成 notebook，避免 PowerShell 命令行编码导致中文被替换成问号。
   - 小样本 smoke 测试通过：
     - 每类限制 30 行，Bootstrap 3 轮，mRMR Top10。
     - 成功读取 6 类标签，合计 180 行、632 个特征。
@@ -1072,3 +1073,91 @@
 - GitHub 上传日志：
   - 已提交到本地 `master` 分支：`c37751c`。
   - 已推送到 `origin/master`：`c37751c`。
+
+## 2026-09-06（PCCP断丝特征挖掘notebook补全与逻辑修正）
+
+- 用户反馈与本次修正目标：
+  - 检查 `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` 已执行输出中是否存在算法逻辑问题。
+  - 每个一级标题下补充算法原理说明。
+  - 按开发方案补齐 `Notebook02 六类特征分布分析`、方案约定图件和结果解释。
+  - 对 `Notebook03/04/05` 增加必要二级结构和方法说明。
+  - 输出结果表增加字段含义、指标方向和人工解读说明。
+  - 给出 `BK00 vs NONBK00`、`BK00 vs QJ00`、`BK05 vs QJ05`、`BK05 vs NONBK05`、`BK vs NONBK` 的特征数量推荐表。
+  - 增加特征挖掘后的 `SVM/逻辑回归` 分类测试，并强调按源文件分组划分训练/测试，避免同源窗口泄漏。
+
+- 已执行输出的逻辑审查结论：
+  - 六类标签均能读取，完整运行结果中样本规模为 `38236` 行、`632` 个特征。
+  - `FL05` 有一个异常 CSV 分片表头仅 `21` 列，已按 `min_feature_csv_columns=100` 跳过；该逻辑正确。
+  - 数据存在明显不均衡：`BK=162`，`Other=38074`，后续使用 Bootstrap 平衡统计与分类器 `class_weight='balanced'` 处理。
+  - 旧版最终排序中存在完全相关重复特征可能同时进入 Top 排名的问题，例如 `R_2_1/R_h`、`R_harm/Ridge_coh`，本次已修正冗余惩罚。
+  - 旧版 notebook 缺少方案中的六类分布分析、组合搜索、分类测试和比较任务级结论，本次已补齐。
+
+- 新增/修改底层模块：
+  - `src/pccp_feature_mining/distribution_analysis.py`
+    - 六类分布筛查特征选择。
+    - PCA 二维投影。
+    - 可选 UMAP 投影。
+    - 六类 KDE 图。
+  - `src/pccp_feature_mining/combination_search.py`
+    - mRMR 前缀组合评估。
+    - 近似 ReliefF 排序。
+    - Sequential Forward Selection + LDA 交叉验证。
+  - `src/pccp_feature_mining/classification_test.py`
+    - 逻辑回归、线性 SVM、RBF-SVM 分类测试。
+    - 五个比较任务的推荐特征数量和具体特征输出。
+    - 分类验证按 `source_file_name` 分组划分训练/测试。
+  - `src/pccp_feature_mining/feature_discrimination.py`
+    - 增加 `BK00_NONBK00`、`BK00_QJ00`、`BK05_QJ05`、`BK05_NONBK05` 精确比较任务。
+  - `src/pccp_feature_mining/feature_redundancy.py`
+    - 非代表高相关特征即使判别分并列，也按其与簇代表的相关性增加冗余惩罚。
+  - `src/pccp_feature_mining/run_all.py`
+    - 一键流程补齐分布图、组合搜索、分类测试和推荐结论输出。
+
+- notebook 结构已重写：
+  - `Notebook00 运行结果与算法逻辑审查`
+  - `Notebook01 数据读取与质量检查`
+  - `Notebook02 六类特征分布分析`
+  - `Notebook03 单特征判别能力分析`
+  - `Notebook04 特征冗余分析`
+  - `Notebook05 多特征组合搜索`
+  - `Notebook06 特征稳定性分析`
+  - `Notebook07 跨流速一致性分析`
+  - `Notebook08 最终特征评价与结论`
+  - `Notebook09 特征挖掘后的分类测试`
+  - `Notebook10 一键运行入口`
+
+- 新增输出文件：
+  - `six_class_distribution_features.csv`
+  - `six_class_pca_projection.csv`
+  - `six_class_pca_explained_variance.csv`
+  - `six_class_umap_projection.csv`
+  - `feature_combination_mrmr_prefix.csv`
+  - `feature_combination_search.csv`
+  - `relieff_rank.csv`
+  - `sfs_selection_path.csv`
+  - `classification_test_results.csv`
+  - `comparison_feature_recommendations.csv`
+  - `classification_conclusion_table.csv`
+
+- 新增输出图：
+  - `plots/six_class_feature_boxplots.png`
+  - `plots/six_class_feature_kde.png`
+  - `plots/six_class_pca.png`
+  - `plots/six_class_umap.png`，仅环境安装 `umap-learn` 时生成。
+  - `plots/final_feature_ranking_top30.png`
+  - `plots/top_feature_boxplots.png`
+
+- 小样本验证：
+  - 每类限制 `20` 行，Bootstrap `2` 轮，mRMR Top12，分类特征数测试 `(3, 5)`。
+  - 成功读取六类标签，合计 `120` 行、`632` 个特征。
+  - 成功生成分布分析、组合搜索、最终排序和分类测试结果。
+  - smoke 输出中的推荐结果示例：
+    - `BK00_vs_NONBK00`：推荐 `3` 个特征，线性 SVM。
+    - `BK00_vs_QJ00`：推荐 `3` 个特征，逻辑回归。
+    - `BK05_vs_QJ05`：推荐 `3` 个特征，线性 SVM。
+    - `BK05_vs_NONBK05`：推荐 `5` 个特征，逻辑回归。
+    - `BK_vs_NONBK`：推荐 `5` 个特征，逻辑回归。
+
+- 验证记录：
+  - `python -m py_compile src\pccp_feature_mining\*.py` 通过。
+  - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` JSON 解析通过，所有代码单元 `ast.parse` 通过。
