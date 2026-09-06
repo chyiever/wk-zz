@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .feature_schema import numeric_feature_frame
+from .feature_schema import feature_chinese_meaning, numeric_feature_frame
 
 
 def build_dataset_summary(frame: pd.DataFrame) -> pd.DataFrame:
@@ -46,6 +46,7 @@ def build_feature_quality(frame: pd.DataFrame, feature_columns: list[str] | tupl
         rows.append(
             {
                 "feature": col,
+                "特征中文含义": feature_chinese_meaning(col),
                 "non_missing": int(finite.size),
                 "missing_rate": float(1.0 - finite.size / n),
                 "unique_values": int(finite.nunique(dropna=True)),
@@ -70,5 +71,5 @@ def feature_list_frame(feature_columns: list[str] | tuple[str, ...]) -> pd.DataF
             band, name = col.split("__", 1)
         else:
             band, name = "", col
-        rows.append({"feature": col, "band": band, "base_feature": name})
+        rows.append({"feature": col, "band": band, "base_feature": name, "特征中文含义": feature_chinese_meaning(col)})
     return pd.DataFrame(rows)

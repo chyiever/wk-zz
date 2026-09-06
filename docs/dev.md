@@ -1063,6 +1063,80 @@
 - 验证记录：
   - `python -m py_compile src\pccp_feature_mining\*.py` 通过。
   - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` JSON 解析通过，所有代码单元 `ast.parse` 通过。
+
+## 2026-09-06（PCCP特征挖掘notebook展示、缺失特征审计与冗余分析增强）
+
+- 用户反馈与本次修正目标：
+  - 读取并更新 `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` 最新本地版本。
+  - 所有 notebook 输出表添加表号和标题，含特征名的表格追加中文含义列。
+  - 结果图的绘图代码保留在 notebook 中，并在 notebook 内直接显示 PNG。
+  - 回答并修复 FL00 示例 CSV 中大量“有表头但无有效特征值”的样本未被 Notebook01 检测出来的问题。
+  - Notebook03 补齐 3.1-3.5 二级比较任务；Notebook04 拆分 Pearson/Spearman/对比；Notebook05 拆分 4 个方法小节；Notebook06/07 补参数、原理和公式解释。
+
+- 数据读取与质量检查修正：
+  - `src/pccp_feature_mining/config.py`
+    - 新增 `min_valid_feature_values_per_row`，默认 `100`。
+  - `src/pccp_feature_mining/data_loader.py`
+    - `_read_one_csv()` 新增行级有效特征数统计。
+    - `load_report.csv` 新增 `retained_rows`、`dropped_low_valid_feature_rows`、`feature_columns_detected`、`min_valid_feature_values`、`median_valid_feature_values`、`max_valid_feature_values`。
+    - 表头完整但低有效特征数的样本行会被剔除，不再进入分布、判别、冗余、组合、稳定性、跨流速和分类测试。
+  - 对用户给出的示例文件：
+    - `features_20260905_173711_part_0001.csv` 表头列数为 `661`，行数为 `17066`。
+    - 检测到 `622` 个有效频带特征列。
+    - `6568` 行有效特征数为 `0`，低于阈值 `100`，新版保留 `10498` 行，剔除 `6568` 行。
+    - 旧版漏检原因是只检查文件列数和空表，没有检查每个样本行的有效特征数。
+
+- 特征中文含义增强：
+  - `src/pccp_feature_mining/feature_schema.py`
+    - 新增 `BASE_FEATURE_MEANINGS` 特征字典。
+    - 新增 `feature_chinese_meaning()`，可将 `b_10k_50k__R_hl_mean` 解析为“10-50 kHz频带，高低频能量比均值，描述高频能量相对低频能量的平均占比”。
+    - 新增 `describe_feature_list()`，用于解释 `selected_features`、`recommended_features`、`recommended_drop` 这类分号拼接字段。
+    - 新增 `add_feature_meaning_columns()`，自动给 `feature`、`feature_a`、`feature_b`、`cluster_representative`、`recommended_keep`、`selected_features`、`recommended_features` 等字段追加中文含义列。
+  - `src/pccp_feature_mining/quality_control.py`
+    - `feature_list_frame()` 和 `build_feature_quality()` 输出直接包含 `特征中文含义`。
+
+- 特征冗余分析增强：
+  - `src/pccp_feature_mining/feature_redundancy.py`
+    - 新增 `compare_correlation_methods()`，对比 Pearson-only、Spearman-only、Pearson+Spearman 命中的高相关特征对。
+    - 新增 `build_redundancy_recommendations()`，把两种方法的高相关边合并成冗余组，并按 `BK_NONBK` 判别分推荐每组保留 1 个特征。
+  - `src/pccp_feature_mining/run_all.py`
+    - 一键流程同时输出 `pearson_correlation_matrix.csv`、`spearman_correlation_matrix.csv`、`pearson_high_correlation_pairs.csv`、`spearman_high_correlation_pairs.csv`、`correlation_method_comparison.csv` 和 `redundancy_recommendations.csv`。
+    - 后续 mRMR 与最终冗余惩罚仍使用 Spearman 相关矩阵。
+
+- notebook 结构更新：
+  - 新增 `Notebook00 环境初始化与显示工具`，定义 `show_table()` 和 `show_image()`。
+  - 每个展示表都输出“表 N 标题”，并通过 `add_feature_meaning_columns()` 自动补中文含义。
+  - Notebook02 明确“六类特征分布”是六个来源标签上的特征分布，不是只有六个特征；绘图单元会在保存后直接显示箱线图、KDE、PCA、UMAP。
+  - Notebook03 拆成：
+    - `3.1 BK00 vs NONBK00`
+    - `3.2 BK00 vs QJ00`
+    - `3.3 BK05 vs QJ05`
+    - `3.4 BK05 vs NONBK05`
+    - `3.5 BK vs NONBK`
+  - Notebook04 拆成：
+    - `4.1 使用 Pearson 相关`
+    - `4.2 使用 Spearman 相关`
+    - `4.3 Pearson 与 Spearman 结果对比`
+  - Notebook05 拆成：
+    - `5.1 mRMR前缀组合`
+    - `5.2 近似 ReliefF 排序`
+    - `5.3 顺序前向选择 SFS`
+    - `5.4 多方法结果对比`
+  - Notebook06 补充 Bootstrap 原理、默认抽样 200 次、每轮全部 BK + 等量 Other、Top-K 频率和参数调整方法。
+  - Notebook07 补充各列含义、排序原因和 `auc_lift`、`cross_condition_consistency`、`median_shift_norm`、`cross_flow_score` 公式。
+
+- 构建脚本更新：
+  - `tools/build_pccp_feature_mining_notebook.py` 已重写为更短的 UTF-8 notebook 生成脚本。
+  - 重新生成 `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb`，清除旧执行输出，避免旧输出与新源码不一致。
+
+- 验证记录：
+  - `python -m compileall -q src\pccp_feature_mining tools\build_pccp_feature_mining_notebook.py` 通过。
+  - notebook JSON 解析通过，所有代码单元 `ast.parse` 通过。
+  - 小样本 smoke test 通过：
+    - 每类限制 `20` 行，Bootstrap `2` 轮，mRMR Top12，组合/分类特征数 `(3, 5)`。
+    - 成功读取六类标签，合计 `120` 行、`632` 个特征。
+    - 成功生成 `load_report.csv`、`redundancy_recommendations.csv`、`classification_test_results.csv`、`final_feature_ranking.csv` 等输出。
+  - smoke test 中 `joblib/loky` 输出“无法获取物理核心数，回退逻辑核心数”的环境警告，不影响流程结果。
   - 新增 `tools/build_pccp_feature_mining_notebook.py` 用 UTF-8 结构化生成 notebook，避免 PowerShell 命令行编码导致中文被替换成问号。
 
 - GitHub 上传日志：

@@ -21,7 +21,14 @@ from .distribution_analysis import (
     select_distribution_features,
 )
 from .feature_discrimination import evaluate_feature_discrimination
-from .feature_redundancy import build_correlation_clusters, compute_correlation_matrix, high_correlation_pairs
+from .feature_redundancy import (
+    build_correlation_clusters,
+    build_redundancy_recommendations,
+    compare_correlation_methods,
+    compute_correlation_matrix,
+    high_correlation_pairs,
+)
+from .feature_schema import add_feature_meaning_columns
 from .feature_selection import build_final_ranking, build_relevance_series, run_mrmr_ranking
 from .quality_control import build_dataset_summary, build_feature_quality, feature_list_frame
 from .report_generator import write_csv, write_markdown_summary
@@ -40,6 +47,7 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
     dataset = load_feature_dataset(
         feature_inputs=feature_inputs,
         min_feature_csv_columns=cfg.min_feature_csv_columns,
+        min_valid_feature_values_per_row=cfg.min_valid_feature_values_per_row,
         max_rows_per_label=cfg.max_rows_per_label,
         random_state=cfg.random_state,
     )
@@ -55,7 +63,7 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
     write_csv(feature_quality, output_dir / "quality_report.csv")
 
     distribution_features = select_distribution_features(frame, feature_columns, top_n=cfg.distribution_top_n)
-    write_csv(distribution_features, output_dir / "six_class_distribution_features.csv")
+    write_csv(add_feature_meaning_columns(distribution_features), output_dir / "six_class_distribution_features.csv")
     pca_projection, pca_explained = run_pca_projection(
         frame,
         feature_columns,
@@ -87,21 +95,43 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         plot_projection(umap_projection, "UMAP1", "UMAP2", output_dir / "plots/six_class_umap.png", "六类特征UMAP投影")
 
     discrimination = evaluate_feature_discrimination(frame, feature_columns, random_state=cfg.random_state)
-    write_csv(discrimination, output_dir / "feature_discrimination.csv")
+    write_csv(add_feature_meaning_columns(discrimination), output_dir / "feature_discrimination.csv")
 
     relevance = build_relevance_series(discrimination, comparison="BK_NONBK")
-    corr = compute_correlation_matrix(
+    pearson_corr = compute_correlation_matrix(
+        frame,
+        feature_columns,
+        method="pearson",
+        max_rows=cfg.max_correlation_rows,
+        random_state=cfg.random_state,
+    )
+    spearman_corr = compute_correlation_matrix(
         frame,
         feature_columns,
         method="spearman",
         max_rows=cfg.max_correlation_rows,
         random_state=cfg.random_state,
     )
-    corr.to_csv(output_dir / "spearman_correlation_matrix.csv", encoding="utf-8-sig")
-    high_pairs = high_correlation_pairs(corr, threshold=cfg.correlation_threshold)
-    write_csv(high_pairs, output_dir / "high_correlation_pairs.csv")
-    clusters = build_correlation_clusters(corr, relevance=relevance, threshold=cfg.correlation_threshold)
-    write_csv(clusters, output_dir / "correlation_cluster.csv")
+    corr = spearman_corr
+    pearson_corr.to_csv(output_dir / "pearson_correlation_matrix.csv", encoding="utf-8-sig")
+    spearman_corr.to_csv(output_dir / "spearman_correlation_matrix.csv", encoding="utf-8-sig")
+    pearson_pairs = high_correlation_pairs(pearson_corr, threshold=cfg.correlation_threshold)
+    spearman_pairs = high_correlation_pairs(spearman_corr, threshold=cfg.correlation_threshold)
+    high_pairs = spearman_pairs
+    correlation_method_comparison = compare_correlation_methods(pearson_pairs, spearman_pairs)
+    redundancy_recommendations = build_redundancy_recommendations(
+        pearson_corr,
+        spearman_corr,
+        relevance=relevance,
+        threshold=cfg.correlation_threshold,
+    )
+    write_csv(add_feature_meaning_columns(pearson_pairs), output_dir / "pearson_high_correlation_pairs.csv")
+    write_csv(add_feature_meaning_columns(spearman_pairs), output_dir / "spearman_high_correlation_pairs.csv")
+    write_csv(add_feature_meaning_columns(high_pairs), output_dir / "high_correlation_pairs.csv")
+    write_csv(add_feature_meaning_columns(correlation_method_comparison), output_dir / "correlation_method_comparison.csv")
+    write_csv(add_feature_meaning_columns(redundancy_recommendations), output_dir / "redundancy_recommendations.csv")
+    clusters = build_correlation_clusters(spearman_corr, relevance=relevance, threshold=cfg.correlation_threshold)
+    write_csv(add_feature_meaning_columns(clusters), output_dir / "correlation_cluster.csv")
 
     mrmr_rank = run_mrmr_ranking(
         relevance=relevance,
@@ -109,7 +139,7 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         top_n=cfg.mrmr_top_n,
         redundancy_weight=cfg.mrmr_redundancy_weight,
     )
-    write_csv(mrmr_rank, output_dir / "mrmr_rank.csv")
+    write_csv(add_feature_meaning_columns(mrmr_rank), output_dir / "mrmr_rank.csv")
 
     mrmr_prefix = evaluate_mrmr_prefixes(
         frame,
@@ -118,9 +148,9 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         counts=cfg.combination_feature_counts,
         random_state=cfg.random_state,
     )
-    write_csv(mrmr_prefix, output_dir / "feature_combination_mrmr_prefix.csv")
+    write_csv(add_feature_meaning_columns(mrmr_prefix), output_dir / "feature_combination_mrmr_prefix.csv")
     relief_rank = relief_like_ranking(frame, feature_columns, random_state=cfg.random_state)
-    write_csv(relief_rank, output_dir / "relieff_rank.csv")
+    write_csv(add_feature_meaning_columns(relief_rank), output_dir / "relieff_rank.csv")
     sfs_candidates = list(dict.fromkeys(mrmr_rank["feature"].head(cfg.sfs_candidate_count).tolist() + relief_rank["feature"].head(cfg.sfs_candidate_count).tolist()))
     sfs_path = sequential_forward_search(
         frame,
@@ -129,7 +159,7 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         max_selected=cfg.sfs_max_selected,
         random_state=cfg.random_state,
     )
-    write_csv(sfs_path, output_dir / "sfs_selection_path.csv")
+    write_csv(add_feature_meaning_columns(sfs_path), output_dir / "sfs_selection_path.csv")
     combination_summary = mrmr_prefix.copy()
     if not sfs_path.empty:
         combination_summary = pd.concat(
@@ -142,7 +172,7 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
             ignore_index=True,
             sort=False,
         )
-    write_csv(combination_summary, output_dir / "feature_combination_search.csv")
+    write_csv(add_feature_meaning_columns(combination_summary), output_dir / "feature_combination_search.csv")
 
     stability = run_bootstrap_stability(
         frame,
@@ -151,10 +181,10 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         top_ks=cfg.bootstrap_top_ks,
         random_state=cfg.random_state,
     )
-    write_csv(stability, output_dir / "feature_stability.csv")
+    write_csv(add_feature_meaning_columns(stability), output_dir / "feature_stability.csv")
 
     cross_flow = evaluate_cross_flow_features(frame, feature_columns)
-    write_csv(cross_flow, output_dir / "cross_flow_feature.csv")
+    write_csv(add_feature_meaning_columns(cross_flow), output_dir / "cross_flow_feature.csv")
 
     final_ranking = build_final_ranking(
         feature_columns=feature_columns,
@@ -164,7 +194,7 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         redundancy=clusters,
         mrmr_rank=mrmr_rank,
     )
-    write_csv(final_ranking, output_dir / "final_feature_ranking.csv")
+    write_csv(add_feature_meaning_columns(final_ranking), output_dir / "final_feature_ranking.csv")
 
     classification_results, feature_recommendations = run_classification_tests(
         frame,
@@ -175,8 +205,8 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         max_train_rows_per_class=cfg.classification_max_train_rows_per_class,
         random_state=cfg.random_state,
     )
-    write_csv(classification_results, output_dir / "classification_test_results.csv")
-    write_csv(feature_recommendations, output_dir / "comparison_feature_recommendations.csv")
+    write_csv(add_feature_meaning_columns(classification_results), output_dir / "classification_test_results.csv")
+    write_csv(add_feature_meaning_columns(feature_recommendations), output_dir / "comparison_feature_recommendations.csv")
 
     plot_top_feature_boxplots(
         frame,

@@ -39,6 +39,114 @@ def high_correlation_pairs(corr: pd.DataFrame, threshold: float = 0.92) -> pd.Da
     )
 
 
+def compare_correlation_methods(
+    pearson_pairs: pd.DataFrame,
+    spearman_pairs: pd.DataFrame,
+) -> pd.DataFrame:
+    """对比两种相关方法识别出的高相关特征对。"""
+
+    def _normalize(frame: pd.DataFrame, value_name: str) -> pd.DataFrame:
+        if frame.empty:
+            return pd.DataFrame(columns=["feature_min", "feature_max", value_name])
+        out = frame.copy()
+        out["feature_min"] = out[["feature_a", "feature_b"]].min(axis=1)
+        out["feature_max"] = out[["feature_a", "feature_b"]].max(axis=1)
+        return out[["feature_min", "feature_max", value_name]]
+
+    pearson = _normalize(pearson_pairs.rename(columns={"correlation": "pearson_correlation"}), "pearson_correlation")
+    spearman = _normalize(spearman_pairs.rename(columns={"correlation": "spearman_correlation"}), "spearman_correlation")
+    merged = pearson.merge(spearman, on=["feature_min", "feature_max"], how="outer")
+    merged = merged.rename(columns={"feature_min": "feature_a", "feature_max": "feature_b"})
+    merged["abs_pearson"] = merged["pearson_correlation"].abs()
+    merged["abs_spearman"] = merged["spearman_correlation"].abs()
+    merged["method_hit"] = np.select(
+        [
+            merged["pearson_correlation"].notna() & merged["spearman_correlation"].notna(),
+            merged["pearson_correlation"].notna(),
+            merged["spearman_correlation"].notna(),
+        ],
+        ["Pearson+Spearman", "Pearson_only", "Spearman_only"],
+        default="none",
+    )
+    return merged.sort_values(["method_hit", "abs_spearman", "abs_pearson"], ascending=[True, False, False])
+
+
+def build_redundancy_recommendations(
+    pearson_corr: pd.DataFrame,
+    spearman_corr: pd.DataFrame,
+    relevance: pd.Series,
+    threshold: float = 0.92,
+) -> pd.DataFrame:
+    """合并Pearson/Spearman高相关图，输出每个冗余组的保留建议。"""
+
+    features = list(pearson_corr.columns.intersection(spearman_corr.columns))
+    adjacency = {feature: set() for feature in features}
+    for corr in (pearson_corr, spearman_corr):
+        for i, a in enumerate(features):
+            related = corr.index[corr.loc[a, features].abs() >= threshold].tolist()
+            for b in related:
+                if a != b:
+                    adjacency[a].add(b)
+                    adjacency[b].add(a)
+
+    seen: set[str] = set()
+    rows: list[dict[str, object]] = []
+    group_id = 0
+    for feature in features:
+        if feature in seen or not adjacency[feature]:
+            continue
+        group_id += 1
+        stack = [feature]
+        group: list[str] = []
+        seen.add(feature)
+        while stack:
+            cur = stack.pop()
+            group.append(cur)
+            for nxt in adjacency[cur]:
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+
+        ordered = sorted(group, key=lambda x: float(relevance.get(x, 0.0)), reverse=True)
+        keep = ordered[0]
+        drop = ordered[1:]
+        sub_p = pearson_corr.loc[ordered, ordered].abs().to_numpy()
+        sub_s = spearman_corr.loc[ordered, ordered].abs().to_numpy()
+        tri = np.triu_indices(len(ordered), k=1)
+        p_values = sub_p[tri] if len(ordered) > 1 else np.array([])
+        s_values = sub_s[tri] if len(ordered) > 1 else np.array([])
+        rows.append(
+            {
+                "redundancy_group_id": group_id,
+                "feature_count": len(ordered),
+                "features_in_group": ";".join(ordered),
+                "recommended_keep": keep,
+                "recommended_drop": ";".join(drop),
+                "max_abs_pearson": float(np.nanmax(p_values)) if p_values.size else np.nan,
+                "max_abs_spearman": float(np.nanmax(s_values)) if s_values.size else np.nan,
+                "pearson_high_pair_count": int(np.sum(p_values >= threshold)) if p_values.size else 0,
+                "spearman_high_pair_count": int(np.sum(s_values >= threshold)) if s_values.size else 0,
+                "recommendation_reason": "保留组内BK_NONBK判别分最高的特征，其余视为高相关冗余候选",
+            }
+        )
+    if not rows:
+        return pd.DataFrame(
+            columns=[
+                "redundancy_group_id",
+                "feature_count",
+                "features_in_group",
+                "recommended_keep",
+                "recommended_drop",
+                "max_abs_pearson",
+                "max_abs_spearman",
+                "pearson_high_pair_count",
+                "spearman_high_pair_count",
+                "recommendation_reason",
+            ]
+        )
+    return pd.DataFrame(rows).sort_values(["feature_count", "max_abs_spearman"], ascending=[False, False])
+
+
 def build_correlation_clusters(
     corr: pd.DataFrame,
     relevance: pd.Series,

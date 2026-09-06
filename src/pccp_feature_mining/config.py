@@ -23,6 +23,7 @@ class MiningConfig:
 
     output_dir: Path = Path("outputs/PCCP_feature_mining")
     min_feature_csv_columns: int = 100
+    min_valid_feature_values_per_row: int = 100
     random_state: int = 42
     correlation_threshold: float = 0.92
     bootstrap_rounds: int = 200
