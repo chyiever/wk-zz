@@ -7,6 +7,7 @@ torch.stft 批量输入 (N, L) 返回 (N, n_freq, n_time)，非 (n_freq, n_time,
 from __future__ import annotations
 
 import math
+import os
 
 import numpy as np
 import pywt
@@ -24,6 +25,12 @@ def _init_gpu_stft():
     """惰性初始化 torch GPU 后端。"""
     global _torch_available, _torch, _device
     if _torch is not None:
+        return _torch_available
+    flag = os.getenv("FEA_CPT_USE_GPU", "1").strip().lower()
+    if flag in {"0", "false", "off", "no"}:
+        _torch_available = False
+        _torch = None
+        _device = None
         return _torch_available
     try:
         import torch
@@ -251,7 +258,7 @@ def _dynamic_programming_ridge(freqs: np.ndarray, power: np.ndarray, search_hz: 
 
 def build_ridge_mask(freqs: np.ndarray, ridge_f1: np.ndarray, ridge_f2: np.ndarray, relative_bandwidth: float) -> np.ndarray:
     """Build harmonic mask around primary and second-harmonic ridges."""
-    mask = np.zeros((len(freqs), len(ridge_f1)), dtype=float)
+    mask = np.zeros((len(freqs), len(ridge_f1)), dtype=np.float32)
     if len(freqs) == 0:
         return mask
     bin_hz = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0

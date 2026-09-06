@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
-from .base import FeatureRecord
+from .base import FeatureContext, FeatureRecord
 from .features import compute_all_features
 from .gpu_backend import gpu_backend_info
 from .params import DEFAULT_FEATURE_PARAMS
@@ -262,9 +262,30 @@ def _select_tdms_channel(tdms_file):
     return best
 
 
-def _load_tdms_source(path: Path, fallback_sample_rate: float | None = None) -> dict[str, object]:
+def _load_tdms_source(path: Path, fallback_sample_rate: float | None = None, channel_name: str | None = None) -> dict[str, object]:
     td = TdmsFile.read(path)
-    g, c = _select_tdms_channel(td)
+    
+    # 如果指定了通道名称，尝试查找指定通道
+    if channel_name is not None:
+        target_channel = None
+        target_group = None
+        for g in td.groups():
+            for c in g.channels():
+                if str(c.name).lower() == channel_name.lower():
+                    target_channel = c
+                    target_group = g
+                    break
+            if target_channel is not None:
+                break
+        
+        if target_channel is not None:
+            g, c = target_group, target_channel
+        else:
+            # 如果指定通道不存在，回退到默认选择逻辑
+            g, c = _select_tdms_channel(td)
+    else:
+        g, c = _select_tdms_channel(td)
+    
     signal_values = np.asarray(c[:], dtype=float)
     props = {}
     props.update(getattr(td, 'properties', {}) or {})
@@ -297,12 +318,12 @@ def _load_tdms_source(path: Path, fallback_sample_rate: float | None = None) -> 
     }
 
 
-def load_source_file(path: Path, tdms_fallback_sample_rate: float | None = None) -> dict[str, object]:
+def load_source_file(path: Path, tdms_fallback_sample_rate: float | None = None, tdms_channel_name: str | None = None) -> dict[str, object]:
     suf = path.suffix.lower()
     if suf == '.npz':
         return _load_npz_source(path)
     if suf == '.tdms':
-        return _load_tdms_source(path, tdms_fallback_sample_rate)
+        return _load_tdms_source(path, tdms_fallback_sample_rate, tdms_channel_name)
     raise ValueError(f'Unsupported file type: {path.suffix}')
 
 
@@ -502,9 +523,14 @@ def compute_all_features_for_window(
             )
 
             ridge_mask_full = build_ridge_mask(s['full_stft_freqs'], ridge_f1, ridge_f2, params.ridge_relative_bandwidth)
-            residual_power_full = s['full_stft_power'] * (1.0 - ridge_mask_full)
-            total_energy_tf = float(np.sum(s['full_stft_power']))
-            harmonic_energy = float(np.sum(s['full_stft_power'] * ridge_mask_full))
+            ridge_mask_bool = ridge_mask_full > 0.0
+            total_energy_tf = float(np.sum(s['full_stft_power'], dtype=np.float64))
+            harmonic_energy = float(np.sum(s['full_stft_power'], where=ridge_mask_bool, dtype=np.float64))
+
+            # 子带残差功率（与 stft_freqs/stft_power 维度一致）
+            band_mask = (s['full_stft_freqs'] >= params.main_band_hz[0]) & (s['full_stft_freqs'] <= params.main_band_hz[1])
+            residual_power_band = np.asarray(s['stft_power'], dtype=np.float32).copy()
+            residual_power_band *= (1.0 - ridge_mask_full[band_mask, :])
 
             reconstructed = reconstruct_from_mask(
                 s['full_stft_complex'], ridge_mask_full, sample_rate,
@@ -552,7 +578,7 @@ def compute_all_features_for_window(
                 ridge_mask=ridge_mask_full,
                 harmonic_energy=harmonic_energy,
                 total_energy_tf=total_energy_tf,
-                residual_power=residual_power_full,
+                residual_power=residual_power_band,
                 reconstructed_signal=reconstructed,
                 residual_signal=residual_signal,
                 wavelet_node_energies=node_energies,
@@ -737,6 +763,111 @@ def _compute_batched_stft(
     return results
 
 
+def _compute_one_stft_chunk(
+    signal_pre: np.ndarray,
+    windows: list[tuple[int, int, int, int, int]],
+    sample_rate: float,
+    params_map: dict[str, Any],
+    chunk_start: int,
+    chunk_end: int,
+) -> _SharedArrayPack:
+    """Compute one STFT chunk and store it in shared memory."""
+    widest_params = None
+    widest_high = 0.0
+    for params in params_map.values():
+        if params.main_band_hz[1] > widest_high:
+            widest_high = params.main_band_hz[1]
+            widest_params = params
+    if widest_params is None:
+        raise ValueError('params_map is empty')
+
+    chunk_windows = windows[chunk_start:chunk_end]
+    win_len = chunk_windows[0][3]
+    chunk_signals = np.empty((len(chunk_windows), win_len), dtype=np.float32)
+    for row_idx, (_, i0, i1, _, _) in enumerate(chunk_windows):
+        chunk_signals[row_idx, :] = signal_pre[i0:i1]
+
+    stft_freqs, stft_times, stft_complex, stft_power = compute_stft_power(
+        chunk_signals,
+        sample_rate,
+        widest_params.stft_window_ms,
+        widest_params.stft_overlap,
+        widest_params.stft_nfft,
+        batched=True,
+    )
+    short_freqs, short_times, _, short_power = compute_stft_power(
+        chunk_signals,
+        sample_rate,
+        widest_params.short_stft_window_ms,
+        widest_params.short_stft_overlap,
+        widest_params.short_stft_nfft,
+        batched=True,
+    )
+
+    return _SharedArrayPack({
+        'stft_freqs': stft_freqs.astype(np.float64),
+        'stft_times': stft_times.astype(np.float64),
+        'stft_complex': stft_complex,
+        'stft_power': stft_power,
+        'short_freqs': short_freqs.astype(np.float64),
+        'short_times': short_times.astype(np.float64),
+        'short_power': short_power,
+    })
+
+
+def _is_recoverable_stft_memory_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        'out of memory' in text
+        or ('cuda' in text and 'memory' in text)
+        or 'winerror 1455' in text
+        or 'page file' in text
+        or '\u9875\u9762\u6587\u4ef6\u592a\u5c0f' in text
+        or '页面文件太小' in text
+    )
+
+
+def _clear_transient_memory() -> None:
+    try:
+        from .signal_ops import clear_gpu_cache
+        clear_gpu_cache()
+    except Exception:
+        pass
+
+
+def _iter_adaptive_stft_chunks(
+    signal_pre: np.ndarray,
+    windows: list[tuple[int, int, int, int, int]],
+    sample_rate: float,
+    params_map: dict[str, Any],
+    stft_batch_size: int,
+    min_batch_size: int = 10,
+):
+    """Yield one shared-memory STFT chunk at a time, shrinking batches on memory pressure."""
+    batch_size = max(1, int(stft_batch_size))
+    min_batch_size = max(1, int(min_batch_size))
+    chunk_start = 0
+    while chunk_start < len(windows):
+        chunk_end = min(chunk_start + batch_size, len(windows))
+        try:
+            pack = _compute_one_stft_chunk(
+                signal_pre,
+                windows,
+                sample_rate,
+                params_map,
+                chunk_start,
+                chunk_end,
+            )
+        except (RuntimeError, OSError) as exc:
+            if batch_size <= min_batch_size or not _is_recoverable_stft_memory_error(exc):
+                raise
+            batch_size = max(min_batch_size, batch_size // 2)
+            _clear_transient_memory()
+            continue
+        yield pack, chunk_start, chunk_end
+        chunk_start = chunk_end
+
+
 # ---------------------------------------------------------------------------
 # 配置与单文件处理
 # ---------------------------------------------------------------------------
@@ -752,6 +883,7 @@ class SlidingWindowConfig:
     window_overlap: float = 0.50
     target_sample_rate: float = 500_000.0
     tdms_fallback_sample_rate: float | None = None
+    tdms_channel_name: str | None = None  # 指定TDMS通道名称，None表示使用默认选择逻辑
     window_workers: int | None = None
     window_batch_size: int = 2048
     enable_numa_binding: bool = True
@@ -809,7 +941,7 @@ def process_source_file(
     config: SlidingWindowConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """处理单个源文件：加载 -> 升采样 -> 预处理 -> GPU批量STFT -> 并行特征计算。"""
-    src = load_source_file(file_path, config.tdms_fallback_sample_rate)
+    src = load_source_file(file_path, config.tdms_fallback_sample_rate, config.tdms_channel_name)
     raw_signal = np.asarray(src['signal_values'], dtype=float)
     sample_rate = float(src['sample_rate'])
     signal_up, effective_rate = upsample_to_target(raw_signal, sample_rate, config.target_sample_rate)
@@ -855,35 +987,37 @@ def process_source_file(
     try:
         if config.enable_shared_stft:
             # 主进程批量 GPU STFT
-            stft_chunks = _compute_batched_stft(
-                signal_pre, windows, effective_rate, params_map,
+            stft_chunks = _iter_adaptive_stft_chunks(
+                signal_pre,
+                windows,
+                effective_rate,
+                params_map,
                 stft_batch_size=config.stft_batch_size,
             )
 
             with ProcessPoolExecutor(max_workers=max_workers) as ex:
-                futures = []
                 for stft_pack, chunk_start, chunk_end in stft_chunks:
-                    stft_info = stft_pack.get_info()
-                    for idx_in_chunk, (win_id, i0, i1, win_len, step_len) in enumerate(
-                        windows[chunk_start:chunk_end]
-                    ):
-                        f = ex.submit(
-                            _worker_process_window,
-                            sig_info, stft_info,
-                            win_id, i0, i1, win_len, step_len, idx_in_chunk,
-                            effective_rate, params_map, base_meta, start_dt,
-                            config.bands, config.enable_shared_stft,
-                        )
-                        futures.append(f)
+                    try:
+                        futures = []
+                        stft_info = stft_pack.get_info()
+                        for idx_in_chunk, (win_id, i0, i1, win_len, step_len) in enumerate(
+                            windows[chunk_start:chunk_end]
+                        ):
+                            f = ex.submit(
+                                _worker_process_window,
+                                sig_info, stft_info,
+                                win_id, i0, i1, win_len, step_len, idx_in_chunk,
+                                effective_rate, params_map, base_meta, start_dt,
+                                config.bands, config.enable_shared_stft,
+                            )
+                            futures.append(f)
 
-                for fut in as_completed(futures):
-                    feat_row, log_row = fut.result()
-                    rows_features.append(feat_row)
-                    rows_log.append(log_row)
-
-            # 清理 STFT 共享内存
-            for stft_pack, _, _ in stft_chunks:
-                stft_pack.cleanup()
+                        for fut in as_completed(futures):
+                            feat_row, log_row = fut.result()
+                            rows_features.append(feat_row)
+                            rows_log.append(log_row)
+                    finally:
+                        stft_pack.cleanup()
         else:
             with ProcessPoolExecutor(max_workers=max_workers) as ex:
                 futures = []
@@ -922,7 +1056,7 @@ def _preload_file(
 ) -> dict[str, Any] | None:
     """加载并预处理文件，返回计算所需的数据。用于后台线程预加载。"""
     try:
-        src = load_source_file(file_path, config.tdms_fallback_sample_rate)
+        src = load_source_file(file_path, config.tdms_fallback_sample_rate, config.tdms_channel_name)
         raw_signal = np.asarray(src['signal_values'], dtype=float)
         sample_rate = float(src['sample_rate'])
         signal_up, effective_rate = upsample_to_target(raw_signal, sample_rate, config.target_sample_rate)
@@ -971,6 +1105,19 @@ def _preload_file(
 # v2.2 批量处理主流程
 # ---------------------------------------------------------------------------
 
+def _format_duration_seconds(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f'{seconds:.0f}s'
+    if seconds < 3600:
+        minutes = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f'{minutes}m{secs:02d}s'
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    return f'{hours}h{minutes:02d}m'
+
+
 def build_sliding_window_dataset(
     source_paths: Sequence[Path],
     config: SlidingWindowConfig | None = None,
@@ -997,8 +1144,31 @@ def build_sliding_window_dataset(
             if ln.strip()
         }
 
+    total_files = len(source_paths)
     stats = {'processed': 0, 'skipped': 0, 'windows': 0, 'failed': 0}
     file_counter = 0
+    progress_started_at = time.time()
+
+    def _update_progress_bar(pbar: tqdm) -> None:
+        if not show_progress:
+            return
+        done = stats['processed'] + stats['skipped'] + stats['failed']
+        elapsed = time.time() - progress_started_at
+        avg = elapsed / done if done > 0 else 0.0
+        remaining = max(total_files - done, 0)
+        eta = avg * remaining if done > 0 else 0.0
+        total_est = avg * total_files if done > 0 else 0.0
+        pbar.set_postfix_str(
+            '已处理={processed} 跳过={skipped} 失败={failed} '
+            '平均={avg}/文件 预计总用时={total} 剩余={eta}'.format(
+                processed=stats['processed'],
+                skipped=stats['skipped'],
+                failed=stats['failed'],
+                avg=_format_duration_seconds(avg),
+                total=_format_duration_seconds(total_est),
+                eta=_format_duration_seconds(eta),
+            )
+        )
 
     max_workers = config.window_workers if config.window_workers is not None else _auto_detect_workers()
     max_workers = max(1, int(max_workers))
@@ -1022,10 +1192,18 @@ def build_sliding_window_dataset(
         if first_unprocessed is not None:
             next_file_future = preload_executor.submit(_preload_file, first_unprocessed, config)
 
-        for fp in tqdm(source_paths, desc='处理文件', disable=not show_progress):
+        pbar = tqdm(
+            source_paths,
+            total=total_files,
+            desc='处理全部文件',
+            unit='file',
+            disable=not show_progress,
+        )
+        for fp in pbar:
             fp_str = str(fp)
             if fp_str in processed_set:
                 stats['skipped'] += 1
+                _update_progress_bar(pbar)
                 continue
 
             file_counter += 1
@@ -1063,6 +1241,7 @@ def build_sliding_window_dataset(
                     log_path = output_dir / 'failed_samples.log'
                     with open(log_path, 'a', encoding='utf-8') as f:
                         f.write(f'{datetime.now().isoformat()} | {fp.name} | preload failed\n')
+                _update_progress_bar(pbar)
                 continue
 
             signal_pre = file_data['signal_pre']
@@ -1074,6 +1253,7 @@ def build_sliding_window_dataset(
 
             if not windows:
                 stats['skipped'] += 1
+                _update_progress_bar(pbar)
                 continue
 
             # 创建 signal_pre 共享内存
@@ -1086,40 +1266,41 @@ def build_sliding_window_dataset(
             try:
                 if config.enable_shared_stft:
                     # 主进程批量 GPU STFT
-                    stft_chunks = _compute_batched_stft(
-                        signal_pre, windows, effective_rate, params_map,
+                    stft_chunks = _iter_adaptive_stft_chunks(
+                        signal_pre,
+                        windows,
+                        effective_rate,
+                        params_map,
                         stft_batch_size=config.stft_batch_size,
                     )
 
-                    # 提交窗口任务到持久化进程池
-                    futures = []
+                    # Submit and collect one STFT chunk at a time so shared memory is released promptly.
                     for stft_pack, chunk_start, chunk_end in stft_chunks:
-                        stft_info = stft_pack.get_info()
-                        for idx_in_chunk, (win_id, i0, i1, win_len, step_len) in enumerate(
-                            windows[chunk_start:chunk_end]
-                        ):
-                            f = executor.submit(
-                                _worker_process_window,
-                                sig_info, stft_info,
-                                win_id, i0, i1, win_len, step_len, idx_in_chunk,
-                                effective_rate, params_map, base_meta, start_dt,
-                                config.bands, config.enable_shared_stft,
-                            )
-                            futures.append(f)
-
-                    # 收集结果
-                    for fut in as_completed(futures):
                         try:
-                            feat_row, log_row = fut.result()
-                            rows_features.append(feat_row)
-                            rows_log.append(log_row)
-                        except Exception as e:
-                            stats['failed'] += 1
-                            logger.warning('窗口计算失败: %s', e)
+                            futures = []
+                            stft_info = stft_pack.get_info()
+                            for idx_in_chunk, (win_id, i0, i1, win_len, step_len) in enumerate(
+                                windows[chunk_start:chunk_end]
+                            ):
+                                f = executor.submit(
+                                    _worker_process_window,
+                                    sig_info, stft_info,
+                                    win_id, i0, i1, win_len, step_len, idx_in_chunk,
+                                    effective_rate, params_map, base_meta, start_dt,
+                                    config.bands, config.enable_shared_stft,
+                                )
+                                futures.append(f)
 
-                    # 清理 STFT 共享内存
-                    for stft_pack, _, _ in stft_chunks:
-                        stft_pack.cleanup()
+                            for fut in as_completed(futures):
+                                try:
+                                    feat_row, log_row = fut.result()
+                                    rows_features.append(feat_row)
+                                    rows_log.append(log_row)
+                                except Exception as e:
+                                    stats['failed'] += 1
+                                    logger.warning('window compute failed: %s', e)
+                        finally:
+                            stft_pack.cleanup()
                 else:
                     futures = []
                     for b0 in range(0, len(windows), config.window_batch_size):
@@ -1153,6 +1334,7 @@ def build_sliding_window_dataset(
 
             if df_features.empty:
                 stats['skipped'] += 1
+                _update_progress_bar(pbar)
                 continue
 
             if output_dir is not None:
@@ -1170,6 +1352,7 @@ def build_sliding_window_dataset(
             processed_set.add(fp_str)
             stats['processed'] += 1
             stats['windows'] += len(df_features)
+            _update_progress_bar(pbar)
 
     finally:
         executor.shutdown(wait=True)

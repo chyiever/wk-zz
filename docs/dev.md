@@ -893,3 +893,63 @@
   - 特征计算依赖模块加载正常。
 - GitHub 上传日志：
   - 未提交，待用户确认。
+
+## 2026-09-06（DATA09 v0-flow 特征提取 WinError 1455 排查与内存优化）
+
+- 本次检查对象：
+  - 用户指定日志：`outputs/DATA09_v0-flow_features_20260904_121425/DATA09_v0.5-flow_features/run_20260905_201502/log_20260905_201502_part_0002.csv`
+  - notebook：`notebooks/DATA09_v0-flow_feature_extraction.ipynb`
+  - 底层模块：`src/fea_cpt_gpu_v2_2/sliding_window.py`、`src/fea_cpt_gpu_v2_2/signal_ops.py`
+  - 兼容修复：`src/fea_cpt_gpu_v2_0/sliding_window.py`、`src/fea_cpt_gpu_v2_0/signal_ops.py`
+
+- 日志检查结论：
+  - `log_20260905_201502_part_0002.csv` 共 2600 行，对应 13 个 TDMS 源文件，每个文件 200 个 30ms、0 重叠窗口。
+  - `source_file_path + window_id` 未发现重复，窗口边界一致：`window_length_samples=30000`、`window_step_samples=30000`、`sample_rate_hz=1000000`。
+  - `missing_selected_features` 非空 2584 行，说明这些窗口虽然写出了元数据，但特征计算阶段发生异常，不能作为可靠完整特征使用。
+  - 主要异常类型：
+    - `Unable to allocate 90.3 MiB for an array with shape (29601, 400) and data type float64`：1638 行。
+    - `[WinError 1455] 页面文件太小，无法完成操作。`：941 行。
+    - 其余为较小矩阵分配失败。
+  - 结论：该分片的核心问题是 Windows 页面文件/共享内存峰值不足，不是 CSV 行数、窗口切分或 TDMS 通道元数据错误。
+
+- 根因分析：
+  - v2.2 批处理路径原先会先生成一个源文件的全部 STFT chunks，并把每个 chunk 的 STFT 结果放入共享内存，随后再统一提交窗口任务。
+  - 对 1MHz、30ms、8 频带的 TDMS 数据，单文件约 200 个窗口；若 STFT batch 与 workers 较大，会叠加 signal shared memory、STFT shared memory、worker 内部矩阵副本和下一文件预加载数据。
+  - 发生 WinError 1455 后，单个窗口内部的部分特征也可能因全频 residual/harmonic 矩阵乘法再分配较大 float64 数组而失败，最终导致 `missing_selected_features` 大量非空。
+
+- 程序修复：
+  - `src/fea_cpt_gpu_v2_2/sliding_window.py`
+    - 新增 `_compute_one_stft_chunk()`，支持单个 STFT chunk 独立计算并写入共享内存。
+    - 新增 `_iter_adaptive_stft_chunks()`，遇到 CUDA OOM、WinError 1455、页面文件不足等内存压力时自动缩小 batch。
+    - 将 `process_source_file()` 与 `build_sliding_window_dataset()` 改为“生成一个 STFT chunk -> 提交/收集窗口任务 -> 立即 cleanup”，避免保留全文件所有 STFT shared memory。
+    - `build_sliding_window_dataset()` 保留原窗口失败计数逻辑，但不再让已处理完的 STFT chunk 长时间占用共享内存。
+  - `src/fea_cpt_gpu_v2_0/sliding_window.py`
+    - 兼容用户 traceback 中的 v2.0 路径：自适应 STFT 分块现在也捕获 `OSError`，并识别 `WinError 1455`、`page file`、`页面文件太小`。
+  - `src/fea_cpt_gpu_v2_2/signal_ops.py` 与 `src/fea_cpt_gpu_v2_0/signal_ops.py`
+    - `build_ridge_mask()` 从默认 float64 改为 float32，0/1 掩码无需 64 位浮点。
+  - v2.0/v2.2 shared-STFT 特征路径：
+    - harmonic energy 使用 `np.sum(..., where=mask)`，避免生成 `full_stft_power * ridge_mask` 的全矩阵临时副本。
+    - residual power 不再生成全频 `residual_power_full`，改为只为当前频带生成 `residual_power_band`。
+
+- notebook 优化：
+  - `notebooks/DATA09_v0-flow_feature_extraction.ipynb` 已清空旧执行输出，移除历史 `KeyboardInterrupt` 展示。
+  - 默认配置恢复为 flow 输出根目录：`outputs/DATA09_v0-flow_features/`。
+  - 默认输入示例指向用户本次日志对应的数据族：`E:\PCCP\0904-FLOW-v0.5`。
+  - 默认滑窗改为 30ms、0 重叠，与既有 `part_0002` 日志一致。
+  - Windows 稳定默认值调整为：
+    - `WINDOW_WORKERS = min(4, _auto_detect_workers())`
+    - `STFT_BATCH_SIZE = 50`
+    - `WINDOW_BATCH_SIZE = 256`
+    - `ENABLE_NUMA_BINDING = False`
+    - `NPZ_PER_CSV = 20`
+  - 批处理单元新增 WinError 1455 定向提示：若仍失败，优先将 `STFT_BATCH_SIZE` 降至 20，再将 `WINDOW_WORKERS` 降至 2，最后可临时设置 `ENABLE_SHARED_STFT=False` 从断点日志续跑。
+  - 汇总单元新增日志分片统计，直接输出每个 log 分片的行数、源文件数和 `missing_selected_features` 非空窗口数。
+  - 特征质量检查单元新增 `missing_selected_features` 错误类型 Top-N 统计，用于判断重跑后是否仍有特征函数级异常。
+
+- 验证记录：
+  - `notebooks/DATA09_v0-flow_feature_extraction.ipynb` JSON 解析通过，所有代码单元 `ast.parse` 通过。
+  - `python -m py_compile src\fea_cpt_gpu_v2_2\sliding_window.py src\fea_cpt_gpu_v2_0\sliding_window.py src\fea_cpt_gpu_v2_2\signal_ops.py src\fea_cpt_gpu_v2_0\signal_ops.py` 通过。
+  - 使用 30ms、1MHz 合成信号验证 `compute_shared_stft()` + `compute_all_features_for_window()`：2 个频带生成 160 个特征，无 NaN。
+
+- GitHub 上传日志：
+  - 待提交并推送。
