@@ -1064,6 +1064,10 @@
   - `python -m py_compile src\pccp_feature_mining\*.py` 通过。
   - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` JSON 解析通过，所有代码单元 `ast.parse` 通过。
   - 新增 `tools/build_pccp_feature_mining_notebook.py` 用 UTF-8 结构化生成 notebook，避免 PowerShell 命令行编码导致中文被替换成问号。
+
+- GitHub 上传日志：
+  - 已提交到本地 `master` 分支：`4a564c1`。
+  - 已推送到 `origin/master`：`4a564c1`。
   - 小样本 smoke 测试通过：
     - 每类限制 30 行，Bootstrap 3 轮，mRMR Top10。
     - 成功读取 6 类标签，合计 180 行、632 个特征。
