@@ -1012,3 +1012,59 @@
   - 所有代码单元 `ast.parse` 通过。
   - AST 扫描未发现中文关键字参数名，也未发现中文裸变量名。
   - 已清空 notebook 历史执行输出，避免旧 `NameError`/`TypeError` traceback 残留影响排查。
+
+## 2026-09-06（PCCP断丝特征挖掘模块化开发）
+
+- 本次开发依据：
+  - `docs/2026-9-6-PCCP断丝特征挖掘_Codex开发方案_修正版.md`
+  - 输入特征目录沿用 DATA09 六类已计算特征向量：
+    - `FL00/FL05 -> Other`
+    - `BK00/BK05 -> BK`
+    - `QJ00/QJ05 -> Other`
+
+- 新增底层代码包：
+  - `src/pccp_feature_mining/`
+  - 按职责拆分为配置、数据读取、特征列识别、物理事件分组、质量检查、单特征判别、冗余分析、mRMR、Bootstrap 稳定性、跨流速分析、最终评分、可视化和报告生成模块。
+  - `BK/QJ` 默认以 `source_file_name` 作为物理事件组，避免同一物理事件窗口在采样分析中被拆散。
+  - `FL` 默认以窗口行作为独立采样单元，符合方案中流噪窗口可独立抽样的假设。
+
+- 新增 notebook：
+  - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb`
+  - 章节结构：
+    - 环境与输入配置
+    - 数据读取与质量检查
+    - 单特征判别能力
+    - 冗余分析与 mRMR
+    - Bootstrap 稳定性
+    - 跨流速一致性
+    - 最终特征排序与分级
+    - 一键运行入口
+
+- 核心输出：
+  - `dataset_summary.csv`
+  - `feature_list.csv`
+  - `quality_report.csv`
+  - `feature_discrimination.csv`
+  - `correlation_cluster.csv`
+  - `mrmr_rank.csv`
+  - `feature_stability.csv`
+  - `cross_flow_feature.csv`
+  - `final_feature_ranking.csv`
+  - `summary_report.md`
+
+- 方法实现要点：
+  - 单特征判别同时输出 `AUC`、`Wasserstein distance`、`Cliff delta` 和 `Mutual Information`。
+  - 主任务为 `BK_NONBK`，同时保留 `BK_QJ`、`BK00_BK05`、`FL00_FL05`、`QJ00_QJ05` 比较。
+  - Bootstrap 每轮使用“全部 BK + 等量 Other”策略；Other 采样保持 QJ 事件完整，FL 按窗口独立。
+  - 冗余分析基于 Spearman 相关矩阵和高相关阈值构建相关簇，mRMR 使用判别相关性减去平均相关冗余。
+  - 最终评分融合 `BK vs Other` 判别、`BK vs QJ` 判别、Bootstrap 稳定性、跨流速一致性，并对流速敏感性和高相关冗余做惩罚。
+  - 最终分级输出 `A/B/C`：A级为稳定断丝核心候选特征，B级为候选特征，C级为工况相关或冗余较高特征。
+
+- 验证记录：
+  - `python -m py_compile src\pccp_feature_mining\*.py` 通过。
+  - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` JSON 解析通过，所有代码单元 `ast.parse` 通过。
+  - 小样本 smoke 测试通过：
+    - 每类限制 30 行，Bootstrap 3 轮，mRMR Top10。
+    - 成功读取 6 类标签，合计 180 行、632 个特征。
+    - 成功生成 `feature_discrimination.csv`、`feature_stability.csv`、`cross_flow_feature.csv`、`final_feature_ranking.csv`。
+  - 当前环境缺少 `tabulate`，报告生成已改为无额外依赖兜底，不再要求安装该包。
