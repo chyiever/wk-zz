@@ -955,3 +955,60 @@
   - 已提交到本地 `master` 分支：`ec156f0`。
   - 已补充提交 v2.0 兼容模块：`ad0d943`。
   - 已推送到 `origin/master`，最终远端提交：`ad0d943`。
+
+## 2026-09-06（DATA09 BK/Other 特征重要性 notebook 二分类改造与中文化修复）
+
+- 本次检查对象：
+  - `notebooks/DATA09_feature_importance_30ms_analysis.ipynb`
+  - 输入特征目录：
+    - `outputs/DATA09_v0-flow_features_20260904_121425/DATA09_v0-flow_features` -> `FL00`
+    - `outputs/DATA09_v0-flow_features_20260904_121425/DATA09_v0.5-flow_features` -> `FL05`
+    - `outputs/DATA09_multi_label_single_event_features/v0-bk_features_BK00` -> `BK00`
+    - `outputs/DATA09_multi_label_single_event_features/v0-qj_features_QJ00` -> `QJ00`
+    - `outputs/DATA09_multi_label_single_event_features/v05-bk_features_BK05` -> `BK05`
+    - `outputs/DATA09_multi_label_single_event_features/v05-qj_features_QJ05` -> `QJ05`
+
+- notebook 目标调整：
+  - 保留 6 类来源标签 `label`：`FL00`、`FL05`、`BK00`、`QJ00`、`BK05`、`QJ05`。
+  - 新增二分类目标 `target_label`：
+    - `BK00/BK05 -> BK`
+    - `FL00/FL05/QJ00/QJ05 -> Other`
+  - 后续训练、特征排序、降维和测试均以 `BK vs Other` 为目标，不再做六分类。
+
+- 输入与数据质量修复：
+  - 输入配置改为“目录 + 显式标签”，递归读取 `features*.csv`。
+  - 新增 `MIN_FEATURE_CSV_COLUMNS = 100`，自动跳过表头列数不足的异常 CSV。
+  - 已确认 `DATA09_v0.5-flow_features/run_20260905_201502/features_20260905_201502_part_0002.csv` 表头仅 21 列，但后续行混入 661 列，不能作为完整特征表读取；notebook 会明确打印跳过原因。
+  - 项目根目录定位改为向上查找 `.git`，避免从 `notebooks` 启动 Jupyter 时误把结果写入 `notebooks/outputs`。
+
+- 样本数量稳定性分析：
+  - 新增按 6 类来源标签的重复子采样稳定性评估。
+  - 使用标准化后的特征均值向量相对 L2 误差，估计各类信号在多少样本量下特征趋于稳定。
+  - 输出 `sample_stability_curve_*.csv`、`sample_stability_summary_*.csv` 和稳定性曲线图。
+
+- 两套独立算法：
+  - 算法1标题明确为“使用算法1的特征重要性排序与降维、测试”。
+  - 算法1使用 RandomForest：
+    - 全特征 holdout 模型 impurity importance。
+    - 多随机种子 RF 稳定性。
+    - 训练集单变量 F 检验。
+    - 训练集内分组 CV permutation importance。
+    - Top-K 和相关性去冗余 Top-K 降维测试。
+  - 算法2标题明确为“使用算法2的特征重要性排序与降维、测试”。
+  - 算法2使用 L1 LogisticRegression：
+    - 为兼容 `scikit-learn 1.8`，使用 `solver='liblinear'`、`l1_ratio=1.0`，去除 deprecated 的 `penalty='l1'` 和无效的 `n_jobs`。
+    - 为控制耗时和缓解类别不均衡，排序与 Top-K 训练使用“全部 BK + 抽样 Other”的平衡训练子集。
+    - 仍在同一个 6:4 holdout 测试集上评估。
+
+- 中文化与误替换修复：
+  - 输入配置、主要参数和主要 `print` 输出已补充中文注释/中文文本。
+  - 修复中文化替换误伤：
+    - `classification_report(..., output_dict=真实类别, ...)` 已恢复为 `output_dict=True`。
+    - `permutation_importance(..., n_重复次数=..., ...)` 已恢复为 `n_repeats=...`。
+  - 经验约束：后续 notebook 中文化只改注释、markdown、字符串字面量和图表标签；不得对 Python 关键字参数名、布尔值、函数 API 参数做机械翻译。
+
+- 验证记录：
+  - `notebooks/DATA09_feature_importance_30ms_analysis.ipynb` JSON 解析通过。
+  - 所有代码单元 `ast.parse` 通过。
+  - AST 扫描未发现中文关键字参数名，也未发现中文裸变量名。
+  - 已清空 notebook 历史执行输出，避免旧 `NameError`/`TypeError` traceback 残留影响排查。
