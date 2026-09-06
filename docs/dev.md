@@ -952,4 +952,5 @@
   - 使用 30ms、1MHz 合成信号验证 `compute_shared_stft()` + `compute_all_features_for_window()`：2 个频带生成 160 个特征，无 NaN。
 
 - GitHub 上传日志：
-  - 待提交并推送。
+  - 已提交到本地 `master` 分支：`ec156f0`。
+  - 已推送到 `origin/master`。
