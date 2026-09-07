@@ -1239,3 +1239,36 @@
 - 验证记录：
   - `python -m py_compile src\pccp_feature_mining\*.py` 通过。
   - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` JSON 解析通过，所有代码单元 `ast.parse` 通过。
+
+## 2026-09-07（补充）PCCP特征定义补充与特征字典文档
+
+- 变更范围：`src/pccp_feature_mining/feature_schema.py`、新增 `docs/PCCP特征字典.md`
+- 补充了 `BASE_FEATURE_MEANINGS` 中缺失的 20 个特征定义：
+  - `C_h`、`R_harm`、`Ridge_coh`、`rho_up`、`rho_down`、`N_turn`、`rho_res`、`N_abn`、`R_tkeo`、
+    `K_loc`、`K_res_max`、`SK_max`、`CF_res`、`T_half_high`、`SC_res_mean`、`k_res_sc`、`k_res_hl`、
+    `S_res_env`、`eta_asym`、`epsilon_rec`
+- 校验：`feature_chinese_meaning()` 对 `fea_cpt_gpu_v2.features.compute_all_features` 产出的全部 64 个静态特征均能解析，无“暂未在特征字典中补充详细物理解释”的遗留项。
+- 新增 `docs/PCCP特征字典.md`：完整特征字典表（65 项），含公式、中英文名称、代码变量名、物理意义，并说明频带前缀与断丝/敲击/流噪声的物理意义解读。
+
+## 2026-09-07（补充）特征含义全量校验与mRMR说明扩充
+
+- 全量校验：对 6 类特征表 8 个 CSV 的 640 个特征列（80 个基础特征 × 8 个频带）逐一执行 `feature_chinese_meaning`，均能解析出中文含义，`暂未在特征字典中补充详细物理解释` 残留数为 0。
+- 结论：程序侧特征含义已补全；notebook 中表 14/19/21 等老旧输出里仍显示的“暂未…”是修改特征字典之前保存的过期输出，重启 kernel 重新运行即可刷新。
+- notebook 5.1 节 mRMR 说明扩充：补充核心公式 score(f)=D(f)-lambda*R(f|S)、各符号含义（D(f) AUC相关分、R(f|S) 平均绝对Spearman冗余、lambda 冗余权重=0.5）、四步算法流程、前K个组合评估说明，并加入两篇经典文献：
+  - Peng H, Long F, Ding C. Feature selection based on mutual information[J]. IEEE TPAMI, 2005, 27(8): 1226-1238.
+  - Ding C, Peng H. Minimum redundancy feature selection from microarray gene expression data[J]. JBCB, 2005, 3(2): 185-205.
+- 校验：notebook JSON 通过 `json.load` 校验，mRMR 单元格内容正确写入。
+
+## 2026-09-07（补充）notebook 算法原理说明整体扩充
+
+- 按“主要流程、核心公式、关键物理量符号含义、参考文献”的格式，对 notebook 中算法原理介绍过于简略的章节进行了系统性补充，涉及 10 个 markdown 单元格：
+  - 03 单特征判别能力分析：新增 AUC/auc_lift、Wasserstein 归一化、Cliff's delta、互信息、discrimination_score 加权公式与含义（参考文献 Fawcett 2006、Cliff 1993）。注意 discrimination_score = 0.55*2*max(auc_lift,0) + 0.30*min(|delta|,1) + 0.15*MI/(1+MI)。
+  - 4.1 Pearson 相关：补充公式与“|r|=1 特征对甄别”说明，记录已核实的实现层重复（R_2_1/R_h 同公式、Ridge_coh/R_harm 同变量赋值）与数学恒等（r_p 与 A_env 满足 A_env=1-2r_p）。
+  - 4.2 Spearman 相关：补充秩相关公式 rho=1-6*sum(d^2)/(n(n^2-1))。
+  - 4.3 冗余组：补充连通分量（Union-Find）建组与 keep/drop 公式。
+  - 5.2 近似 ReliefF：补充 near-hit/near-miss 的 W(f) 加权公式、4 步流程、与标准 ReliefF 的区别（参考文献 Kira&Rendell 1992、Robnik-Sikonja&Kononenko 2003）。
+  - 5.3 SFS：补充每一轮 argmax 选择公式、LDA CV AUC 评估、5 步流程、关键指标（参考文献 Kohavi&John 1997、Pudil et al. 1994）。
+  - 06 Bootstrap 稳定性分析：补充 B 轮平衡抽样构成、lift_b(f)、mean_rank/rank_std/topK_frequency/rank_stability_score 公式与指标表（参考文献 Efron 1979、Efron&Tibshirani 1993）。
+  - 08 最终特征评价：补充 final_score 加权公式、各符号来源、A/B/C 分级规则。
+  - 09 分类测试：补充 balanced_accuracy / recall_positive / specificity 指标公式与严格划分规则说明。
+- 校验：notebook JSON 通过 json.load 校验；所有改动单元格内容与源码实现（feature_discrimination.py、combination_search.py、bootstrap_stability.py、feature_redundancy.py、feature_selection.py、cross_flow_analysis.py）核对一致；已修复单元格内 `|Spearman|` 破坏 Markdown 表格问题与"同源信泄漏"错别字。

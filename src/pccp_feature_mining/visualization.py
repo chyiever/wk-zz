@@ -11,11 +11,21 @@ import seaborn as sns
 from .feature_schema import impute_with_median, numeric_feature_frame
 
 
+AXIS_FONT_SIZE = 10
+TICK_FONT_SIZE = 9
+TITLE_FONT_SIZE = 12
+
+
 def _configure_font() -> None:
-    """优先使用Windows中文字体；缺失时仍可保存图片。"""
+    """统一设置字体、字号等视觉风格，保证各图观感一致。"""
 
     plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans"]
     plt.rcParams["axes.unicode_minus"] = False
+    plt.rcParams["axes.labelsize"] = AXIS_FONT_SIZE
+    plt.rcParams["xtick.labelsize"] = TICK_FONT_SIZE
+    plt.rcParams["ytick.labelsize"] = TICK_FONT_SIZE
+    plt.rcParams["axes.titlesize"] = TITLE_FONT_SIZE
+    plt.rcParams["legend.fontsize"] = TICK_FONT_SIZE
 
 
 def plot_top_feature_boxplots(
@@ -23,8 +33,13 @@ def plot_top_feature_boxplots(
     feature_columns: list[str],
     output_path: Path,
     max_features: int = 12,
+    log_scale: bool = False,
 ) -> None:
-    """绘制Top特征在六类标签下的箱线图。"""
+    """绘制Top特征在六类标签下的箱线图。
+
+    log_scale=True 时对 y 轴使用对数刻度，适合特征值跨越多个数量级的情形
+    （如能量比、方差类特征）；对数刻度下的箱线图基于对数变换后的分位数。
+    """
 
     if not feature_columns:
         return
@@ -34,6 +49,8 @@ def plot_top_feature_boxplots(
     plot_df = pd.concat([frame[["source_label"]].reset_index(drop=True), x.reset_index(drop=True)], axis=1)
     long_df = plot_df.melt(id_vars="source_label", var_name="feature", value_name="value")
     height = max(4.0, 2.0 * len(cols))
+    if log_scale:
+        long_df = long_df[long_df["value"] > 0].copy()
     g = sns.catplot(
         data=long_df,
         x="source_label",
@@ -45,11 +62,12 @@ def plot_top_feature_boxplots(
         height=2.8,
         aspect=1.35,
         fliersize=1.2,
+        log_scale=log_scale,
     )
     g.fig.set_size_inches(11.0, height)
-    g.set_axis_labels("来源标签", "特征值")
-    g.set_titles("{col_name}")
-    g.fig.suptitle("Top特征六类分布箱线图", y=1.02)
+    g.set_axis_labels("来源标签", "特征值", fontsize=AXIS_FONT_SIZE)
+    g.set_titles("{col_name}", fontsize=TITLE_FONT_SIZE)
+    g.fig.suptitle("Top特征六类分布箱线图", y=1.02, fontsize=TITLE_FONT_SIZE)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     g.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(g.fig)

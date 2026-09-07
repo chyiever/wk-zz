@@ -12,7 +12,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from .feature_schema import impute_with_median, numeric_feature_frame
-from .visualization import _configure_font
+from .visualization import AXIS_FONT_SIZE, TICK_FONT_SIZE, TITLE_FONT_SIZE, _configure_font
 
 
 def select_distribution_features(
@@ -48,7 +48,7 @@ def run_pca_projection(
     """标准化全部特征后做PCA二维投影。"""
 
     x = impute_with_median(numeric_feature_frame(frame, feature_columns))
-    meta = frame[["source_label", "target_label", "flow_condition", "event_id"]].copy()
+    meta = frame[["source_label", "target_label", "signal_family", "flow_condition", "event_id"]].copy()
     if len(x) > max_rows:
         sampled = x.sample(n=max_rows, random_state=random_state).index
         x = x.loc[sampled]
@@ -79,10 +79,12 @@ def run_umap_projection(
     try:
         import umap  # type: ignore
     except Exception:
-        return pd.DataFrame(columns=["source_label", "target_label", "flow_condition", "event_id", "UMAP1", "UMAP2"])
+        return pd.DataFrame(
+            columns=["source_label", "target_label", "signal_family", "flow_condition", "event_id", "UMAP1", "UMAP2"]
+        )
 
     x = impute_with_median(numeric_feature_frame(frame, feature_columns))
-    meta = frame[["source_label", "target_label", "flow_condition", "event_id"]].copy()
+    meta = frame[["source_label", "target_label", "signal_family", "flow_condition", "event_id"]].copy()
     if len(x) > max_rows:
         sampled = x.sample(n=max_rows, random_state=random_state).index
         x = x.loc[sampled]
@@ -106,34 +108,57 @@ def plot_feature_kde_by_label(frame: pd.DataFrame, features: list[str], output_p
     long_df = plot_df.melt(id_vars="source_label", var_name="feature", value_name="value")
     g = sns.FacetGrid(long_df, col="feature", col_wrap=2, hue="source_label", sharex=False, sharey=False, height=2.7)
     g.map_dataframe(sns.kdeplot, x="value", fill=False, common_norm=False, warn_singular=False)
-    g.add_legend()
-    g.set_axis_labels("特征值", "密度")
-    g.set_titles("{col_name}")
-    g.fig.suptitle("六类特征KDE分布", y=1.02)
+    g.add_legend(title="来源标签", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
+    g.set_axis_labels("特征值", "密度", fontsize=AXIS_FONT_SIZE)
+    g.set_titles("{col_name}", fontsize=TITLE_FONT_SIZE)
+    g.fig.suptitle("六类特征KDE分布", y=1.02, fontsize=TITLE_FONT_SIZE)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     g.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(g.fig)
 
 
 def plot_projection(projection: pd.DataFrame, x_col: str, y_col: str, output_path: Path, title: str) -> None:
-    """绘制PCA/UMAP二维散点图。"""
+    """绘制PCA/UMAP二维散点图。
+
+    颜色按信号家族（signal_family: BK/FL/QJ）区分，同一家族的
+    BK00/BK05 等使用相同颜色；点型按流速工况（flow_condition）
+    区分，v0 为圆点、v0.5 为叉号；图例仅展示信号家族颜色，
+    不标注流速工况。
+    """
 
     if projection.empty:
         return
     _configure_font()
+    data = projection.copy()
+    if "signal_family" not in data.columns:
+        data["signal_family"] = data["source_label"].astype(str).str.extract(r"^([A-Z]+)")[0].fillna("OTHER")
+    data["flow_condition"] = data.get("flow_condition", pd.Series("v0", index=data.index)).astype(str)
+
+    families = sorted(f_ for f_ in data["signal_family"].dropna().unique())
+    palette = {fam: color for fam, color in zip(families, sns.color_palette("tab10", n_colors=max(len(families), 3)))}
+    markers = {"v0": "o", "v0.5": "X", "unknown": "o"}
+
     plt.figure(figsize=(7.5, 5.8))
-    sns.scatterplot(
-        data=projection,
-        x=x_col,
-        y=y_col,
-        hue="source_label",
-        style="flow_condition",
-        s=14,
-        alpha=0.72,
-        linewidth=0,
-    )
-    plt.title(title)
+    for (fam, flow), grp in data.groupby(["signal_family", "flow_condition"]):
+        marker = markers.get(flow, "o")
+        plt.scatter(
+            grp[x_col],
+            grp[y_col],
+            color=palette.get(fam, "#333333"),
+            marker=marker,
+            s=14,
+            alpha=0.72,
+            linewidth=0,
+        )
+    handles = [
+        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=palette[fam], markersize=6, label=fam)
+        for fam in families
+    ]
+    plt.legend(handles=handles, title="信号家族", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
+    plt.xlabel(x_col, fontsize=AXIS_FONT_SIZE)
+    plt.ylabel(y_col, fontsize=AXIS_FONT_SIZE)
+    plt.title(title, fontsize=TITLE_FONT_SIZE)
     plt.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(output_path, dpi=180)
+    plt.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close()
