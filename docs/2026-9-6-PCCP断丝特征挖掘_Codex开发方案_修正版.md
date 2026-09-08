@@ -135,6 +135,11 @@ FL：
 -   “六类特征分布”指在 `BK00/BK05/FL00/FL05/QJ00/QJ05` 六个来源标签上观察特征分布，不是指只有六个特征。
 -   CSV 中有数百个候选特征，本节先对全部特征计算 `six_class_f_ratio = 类间均值方差 / 类内方差均值`，再选择差异最大的前 `distribution_top_n` 个特征用于图示。
 -   所有含 `feature`、`selected_features`、`recommended_features` 等字段的表格，都追加中文含义列，便于人工审查特征物理意义。
+-   2.7 小节新增按来源类别的样本量稳定性估计，不参与最终特征评分，只用于判断 `BK00/BK05/FL00/FL05/QJ00/QJ05` 每类信号的均值统计量在多少样本后趋于稳定。
+-   2.7 给出两种独立估计方式：
+    -   相邻样本量均值漂移法：比较相邻样本量下标准化特征均值向量的相对 L2 变化，连续低于 `sample_stability_adjacent_threshold` 判为稳定。
+    -   全量均值参照 Bootstrap 误差法：把当前该来源类别的全量均值向量作为参照，重复子采样后计算均值向量相对误差 P90，连续低于 `sample_stability_reference_threshold` 判为稳定。
+-   2.7 输出 `sample_stability_curve.csv`、`sample_stability_summary.csv` 和 `plots/sample_stability_curves.png`；建议样本量取两种方法稳定样本量中较大的一个。
 
 ------------------------------------------------------------------------
 

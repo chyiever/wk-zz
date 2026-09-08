@@ -12,7 +12,7 @@ def write_csv(frame: pd.DataFrame, path: Path) -> None:
     """统一CSV编码，便于Excel直接打开中文字段。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(path, index=False, encoding="utf-8-sig")
+    frame.to_csv(path, index=False, encoding="utf-8-sig", float_format="%.3f")
 
 
 def _table_text(frame: pd.DataFrame) -> str:

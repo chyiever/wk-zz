@@ -14,8 +14,10 @@ from .config import MiningConfig, default_feature_inputs
 from .cross_flow_analysis import evaluate_cross_flow_features
 from .data_loader import load_feature_dataset
 from .distribution_analysis import (
+    estimate_source_feature_stability,
     plot_feature_kde_by_label,
     plot_projection,
+    plot_source_feature_stability_curves,
     run_pca_projection,
     run_umap_projection,
     select_distribution_features,
@@ -93,6 +95,23 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
     plot_projection(pca_projection, "PC1", "PC2", output_dir / "plots/six_class_pca.png", "六类特征PCA投影")
     if not umap_projection.empty:
         plot_projection(umap_projection, "UMAP1", "UMAP2", output_dir / "plots/six_class_umap.png", "六类特征UMAP投影")
+
+    sample_stability_curve, sample_stability_summary = estimate_source_feature_stability(
+        frame,
+        feature_columns,
+        repeats=cfg.sample_stability_repeats,
+        min_samples=cfg.sample_stability_min_samples,
+        adjacent_threshold=cfg.sample_stability_adjacent_threshold,
+        reference_threshold=cfg.sample_stability_reference_threshold,
+        consecutive_points=cfg.sample_stability_consecutive_points,
+        random_state=cfg.random_state,
+    )
+    write_csv(sample_stability_curve, output_dir / "sample_stability_curve.csv")
+    write_csv(sample_stability_summary, output_dir / "sample_stability_summary.csv")
+    plot_source_feature_stability_curves(
+        sample_stability_curve,
+        output_dir / "plots/sample_stability_curves.png",
+    )
 
     discrimination = evaluate_feature_discrimination(frame, feature_columns, random_state=cfg.random_state)
     write_csv(add_feature_meaning_columns(discrimination), output_dir / "feature_discrimination.csv")

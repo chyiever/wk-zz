@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy.stats import gaussian_kde
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
@@ -97,18 +98,372 @@ def run_umap_projection(
     return projection
 
 
-def plot_feature_kde_by_label(frame: pd.DataFrame, features: list[str], output_path: Path) -> None:
-    """绘制六类KDE曲线，观察单个特征分布重叠程度。"""
+def compute_kde_overlap_summary(
+    frame: pd.DataFrame,
+    features: list[str] | tuple[str, ...],
+    label_col: str = "source_label",
+    grid_size: int = 256,
+    max_samples_per_group: int = 3000,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """用KDE重叠面积汇总多组分布差异。
+
+    对每个特征和每一对标签，先用 Gaussian KDE 估计概率密度，再计算
+    overlap = integral(min(p_i(x), p_j(x)) dx)。overlap 越小、1-overlap 越大，
+    两组分布差异越明显。
+    """
+
+    if not features or label_col not in frame.columns:
+        return pd.DataFrame(
+            columns=[
+                "feature",
+                "kde_pair_count",
+                "kde_overlap_mean",
+                "kde_overlap_min",
+                "kde_overlap_max",
+                "kde_separation_mean",
+                "kde_separation_max",
+            ]
+        )
+
+    rng = np.random.default_rng(random_state)
+    x = impute_with_median(numeric_feature_frame(frame, features))
+    labels = frame[label_col].astype(str).reset_index(drop=True)
+    rows: list[dict[str, object]] = []
+
+    for feature in features:
+        values = pd.to_numeric(x[feature].reset_index(drop=True), errors="coerce")
+        group_values: dict[str, np.ndarray] = {}
+        for label in sorted(labels.dropna().unique()):
+            arr = values.loc[labels.eq(label)].to_numpy(dtype=float)
+            arr = arr[np.isfinite(arr)]
+            if len(arr) > max_samples_per_group:
+                arr = rng.choice(arr, size=max_samples_per_group, replace=False)
+            if len(arr) >= 2 and float(np.nanstd(arr)) > 0:
+                group_values[label] = arr
+
+        if len(group_values) < 2:
+            rows.append(
+                {
+                    "feature": feature,
+                    "kde_pair_count": 0,
+                    "kde_overlap_mean": np.nan,
+                    "kde_overlap_min": np.nan,
+                    "kde_overlap_max": np.nan,
+                    "kde_separation_mean": np.nan,
+                    "kde_separation_max": np.nan,
+                }
+            )
+            continue
+
+        pooled = np.concatenate(list(group_values.values()))
+        lo, hi = np.nanpercentile(pooled, [0.5, 99.5])
+        if not np.isfinite(lo) or not np.isfinite(hi) or lo == hi:
+            lo, hi = float(np.nanmin(pooled)), float(np.nanmax(pooled))
+        if lo == hi:
+            lo -= 0.5
+            hi += 0.5
+        grid = np.linspace(float(lo), float(hi), grid_size)
+
+        densities: dict[str, np.ndarray] = {}
+        for label, arr in group_values.items():
+            try:
+                density = gaussian_kde(arr, bw_method="scott")(grid)
+            except Exception:
+                hist, edges = np.histogram(arr, bins=min(64, max(8, len(arr) // 10)), range=(lo, hi), density=True)
+                centers = (edges[:-1] + edges[1:]) / 2.0
+                density = np.interp(grid, centers, hist, left=0.0, right=0.0)
+            area = float(np.trapz(density, grid))
+            densities[label] = density / area if area > 0 else density
+
+        overlaps: list[float] = []
+        density_items = list(densities.items())
+        for i in range(len(density_items)):
+            for j in range(i + 1, len(density_items)):
+                overlap = float(np.trapz(np.minimum(density_items[i][1], density_items[j][1]), grid))
+                overlaps.append(float(np.clip(overlap, 0.0, 1.0)))
+
+        overlap_arr = np.asarray(overlaps, dtype=float)
+        rows.append(
+            {
+                "feature": feature,
+                "kde_pair_count": int(len(overlaps)),
+                "kde_overlap_mean": float(np.nanmean(overlap_arr)),
+                "kde_overlap_min": float(np.nanmin(overlap_arr)),
+                "kde_overlap_max": float(np.nanmax(overlap_arr)),
+                "kde_separation_mean": float(1.0 - np.nanmean(overlap_arr)),
+                "kde_separation_max": float(1.0 - np.nanmin(overlap_arr)),
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values(["kde_separation_mean", "kde_separation_max"], ascending=[False, False])
+
+
+def _default_sample_sizes(total_rows: int, min_samples: int = 5) -> list[int]:
+    """Build readable sample-size checkpoints up to the available rows."""
+
+    if total_rows <= 0:
+        return []
+    base = [
+        min_samples,
+        10,
+        15,
+        20,
+        30,
+        40,
+        50,
+        60,
+        80,
+        100,
+        150,
+        200,
+        300,
+        500,
+        800,
+        1000,
+        1500,
+        2000,
+        3000,
+        5000,
+        8000,
+        10000,
+    ]
+    sizes = sorted({int(n) for n in base if min_samples <= int(n) <= total_rows})
+    if total_rows < min_samples:
+        sizes = [total_rows]
+    elif total_rows not in sizes:
+        sizes.append(int(total_rows))
+    return sizes
+
+
+def _first_stable_size(
+    values: list[float],
+    sizes: list[int],
+    threshold: float,
+    consecutive_points: int,
+) -> int | float:
+    """Return the first sample size where enough consecutive curve points satisfy a threshold."""
+
+    if not values or not sizes:
+        return np.nan
+    ok = np.asarray([np.isfinite(v) and v <= threshold for v in values], dtype=bool)
+    need = max(int(consecutive_points), 1)
+    for start in range(0, len(ok) - need + 1):
+        if bool(ok[start : start + need].all()):
+            return int(sizes[start])
+    return np.nan
+
+
+def estimate_source_feature_stability(
+    frame: pd.DataFrame,
+    feature_columns: list[str] | tuple[str, ...],
+    label_col: str = "source_label",
+    sample_sizes: list[int] | tuple[int, ...] | None = None,
+    repeats: int = 100,
+    min_samples: int = 5,
+    adjacent_threshold: float = 0.02,
+    reference_threshold: float = 0.05,
+    consecutive_points: int = 2,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Estimate when each source label has enough samples for stable feature means.
+
+    Two independent estimates are reported:
+    1. adjacent mean drift: relative L2 change between the averaged mean vector at n_i
+       and n_(i-1);
+    2. full-reference bootstrap error: repeated subsample mean-vector error against the
+       full-label mean vector.
+    """
+
+    if label_col not in frame.columns:
+        raise KeyError(f"{label_col!r} not found in frame")
+    if not feature_columns:
+        empty_curve_cols = [
+            label_col,
+            "total_rows",
+            "sample_size",
+            "previous_sample_size",
+            "adjacent_mean_rel_l2_change",
+            "reference_mean_rel_l2_error_mean",
+            "reference_mean_rel_l2_error_p90",
+            "repeats_used",
+        ]
+        empty_summary_cols = [
+            label_col,
+            "total_rows",
+            "stable_sample_size_adjacent_mean",
+            "stable_sample_size_reference_error",
+            "recommended_stable_sample_size",
+            "stability_status",
+            "adjacent_threshold",
+            "reference_threshold",
+        ]
+        return pd.DataFrame(columns=empty_curve_cols), pd.DataFrame(columns=empty_summary_cols)
+
+    rng = np.random.default_rng(random_state)
+    x = impute_with_median(numeric_feature_frame(frame, feature_columns))
+    scaled = pd.DataFrame(StandardScaler().fit_transform(x), columns=list(feature_columns), index=frame.index)
+    labels = frame[label_col].astype(str)
+    curve_rows: list[dict[str, object]] = []
+    summary_rows: list[dict[str, object]] = []
+    eps = 1e-12
+
+    for label in sorted(labels.dropna().unique()):
+        idx = labels[labels.eq(label)].index
+        group = scaled.loc[idx, :].to_numpy(dtype=float)
+        total_rows = int(group.shape[0])
+        if total_rows == 0:
+            continue
+
+        sizes = list(sample_sizes) if sample_sizes is not None else _default_sample_sizes(total_rows, min_samples)
+        sizes = sorted({int(n) for n in sizes if 1 <= int(n) <= total_rows})
+        if not sizes:
+            continue
+        if total_rows not in sizes:
+            sizes.append(total_rows)
+
+        full_mean = group.mean(axis=0)
+        full_norm = float(np.linalg.norm(full_mean)) + eps
+        mean_vectors: dict[int, np.ndarray] = {}
+        ref_mean_errors: dict[int, float] = {}
+        ref_p90_errors: dict[int, float] = {}
+        repeats_used: dict[int, int] = {}
+
+        for size in sizes:
+            current_repeats = 1 if size >= total_rows else max(int(repeats), 1)
+            sample_means = np.empty((current_repeats, group.shape[1]), dtype=float)
+            for rep in range(current_repeats):
+                if size >= total_rows:
+                    picked = np.arange(total_rows)
+                else:
+                    picked = rng.choice(total_rows, size=size, replace=False)
+                sample_means[rep, :] = group[picked, :].mean(axis=0)
+            mean_vectors[size] = sample_means.mean(axis=0)
+            errors = np.linalg.norm(sample_means - full_mean, axis=1) / full_norm
+            ref_mean_errors[size] = float(np.mean(errors))
+            ref_p90_errors[size] = float(np.percentile(errors, 90))
+            repeats_used[size] = int(current_repeats)
+
+        adjacent_changes: list[float] = []
+        previous_size: int | None = None
+        for size in sizes:
+            if previous_size is None:
+                adjacent_change = np.nan
+            else:
+                previous = mean_vectors[previous_size]
+                current = mean_vectors[size]
+                adjacent_change = float(np.linalg.norm(current - previous) / (np.linalg.norm(previous) + eps))
+            adjacent_changes.append(adjacent_change)
+            curve_rows.append(
+                {
+                    label_col: label,
+                    "total_rows": total_rows,
+                    "sample_size": int(size),
+                    "previous_sample_size": previous_size,
+                    "adjacent_mean_rel_l2_change": adjacent_change,
+                    "reference_mean_rel_l2_error_mean": ref_mean_errors[size],
+                    "reference_mean_rel_l2_error_p90": ref_p90_errors[size],
+                    "repeats_used": repeats_used[size],
+                }
+            )
+            previous_size = int(size)
+
+        ref_values = [ref_p90_errors[size] for size in sizes]
+        stable_adjacent = _first_stable_size(adjacent_changes, sizes, adjacent_threshold, consecutive_points)
+        stable_reference = _first_stable_size(ref_values, sizes, reference_threshold, consecutive_points)
+        stable_candidates = [v for v in [stable_adjacent, stable_reference] if np.isfinite(v)]
+        recommended = int(max(stable_candidates)) if stable_candidates else np.nan
+        if np.isfinite(stable_adjacent) and np.isfinite(stable_reference):
+            status = "two_methods_stable"
+        elif stable_candidates:
+            status = "one_method_stable"
+        else:
+            status = "not_stable_with_current_rows"
+
+        summary_rows.append(
+            {
+                label_col: label,
+                "total_rows": total_rows,
+                "stable_sample_size_adjacent_mean": stable_adjacent,
+                "stable_sample_size_reference_error": stable_reference,
+                "recommended_stable_sample_size": recommended,
+                "stability_status": status,
+                "adjacent_threshold": float(adjacent_threshold),
+                "reference_threshold": float(reference_threshold),
+                "consecutive_points": int(max(consecutive_points, 1)),
+                "min_sample_size_checked": int(min(sizes)),
+                "max_sample_size_checked": int(max(sizes)),
+                "final_adjacent_mean_rel_l2_change": adjacent_changes[-1],
+                "final_reference_mean_rel_l2_error_p90": ref_p90_errors[sizes[-1]],
+            }
+        )
+
+    curve = pd.DataFrame(curve_rows)
+    summary = pd.DataFrame(summary_rows)
+    if not summary.empty:
+        summary = summary.sort_values(["stability_status", "recommended_stable_sample_size", label_col])
+    return curve, summary
+
+
+def plot_source_feature_stability_curves(
+    curve: pd.DataFrame,
+    output_path: Path,
+    label_col: str = "source_label",
+) -> None:
+    """Plot adjacent-mean drift and full-reference error curves by source label."""
+
+    if curve.empty or label_col not in curve.columns:
+        return
+    _configure_font()
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.2), sharex=False)
+    metrics = [
+        ("adjacent_mean_rel_l2_change", "相邻均值向量相对变化"),
+        ("reference_mean_rel_l2_error_p90", "相对全量均值误差P90"),
+    ]
+    for ax, (metric, title) in zip(axes, metrics):
+        for label, grp in curve.groupby(label_col):
+            valid = grp.dropna(subset=[metric]).sort_values("sample_size")
+            if valid.empty:
+                continue
+            ax.plot(valid["sample_size"], valid[metric], marker="o", linewidth=1.4, markersize=3.5, label=str(label))
+        ax.set_xscale("log")
+        ax.set_xlabel("样本量 n", fontsize=AXIS_FONT_SIZE)
+        ax.set_ylabel("相对L2误差", fontsize=AXIS_FONT_SIZE)
+        ax.set_title(title, fontsize=TITLE_FONT_SIZE)
+        ax.grid(True, alpha=0.25)
+        ax.tick_params(labelsize=TICK_FONT_SIZE)
+    axes[0].legend(title="来源类别", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
+    fig.suptitle("各来源类别特征均值稳定性估计", fontsize=TITLE_FONT_SIZE)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_feature_kde_by_label(
+    frame: pd.DataFrame,
+    features: list[str],
+    output_path: Path,
+    col_wrap: int = 2,
+    label_col: str = "source_label",
+) -> None:
+    """绘制六类KDE曲线，观察单个特征分布重叠程度。
+
+    col_wrap 控制每行子图数量：如需 4列2行排布的8个特征，传 col_wrap=4。
+    """
 
     if not features:
         return
+    if label_col not in frame.columns:
+        return
     _configure_font()
     x = impute_with_median(numeric_feature_frame(frame, features))
-    plot_df = pd.concat([frame[["source_label"]].reset_index(drop=True), x.reset_index(drop=True)], axis=1)
-    long_df = plot_df.melt(id_vars="source_label", var_name="feature", value_name="value")
-    g = sns.FacetGrid(long_df, col="feature", col_wrap=2, hue="source_label", sharex=False, sharey=False, height=2.7)
+    plot_df = pd.concat([frame[[label_col]].reset_index(drop=True), x.reset_index(drop=True)], axis=1)
+    long_df = plot_df.melt(id_vars=label_col, var_name="feature", value_name="value")
+    g = sns.FacetGrid(long_df, col="feature", col_wrap=col_wrap, hue=label_col, sharex=False, sharey=False, height=2.7)
     g.map_dataframe(sns.kdeplot, x="value", fill=False, common_norm=False, warn_singular=False)
-    g.add_legend(title="来源标签", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
+    legend_title = "来源标签" if label_col == "source_label" else "比较标签"
+    g.add_legend(title=legend_title, fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
     g.set_axis_labels("特征值", "密度", fontsize=AXIS_FONT_SIZE)
     g.set_titles("{col_name}", fontsize=TITLE_FONT_SIZE)
     g.fig.suptitle("六类特征KDE分布", y=1.02, fontsize=TITLE_FONT_SIZE)
@@ -122,8 +477,9 @@ def plot_projection(projection: pd.DataFrame, x_col: str, y_col: str, output_pat
 
     颜色按信号家族（signal_family: BK/FL/QJ）区分，同一家族的
     BK00/BK05 等使用相同颜色；点型按流速工况（flow_condition）
-    区分，v0 为圆点、v0.5 为叉号；图例仅展示信号家族颜色，
-    不标注流速工况。
+    区分，v0 为圆点、v0.5 为叉号；图例逐条标注完整来源标签
+    （如 BK00/BK05/FL00/FL05/QJ00/QJ05），颜色表达家族、
+    点型表达流速。
     """
 
     if projection.empty:
@@ -150,11 +506,28 @@ def plot_projection(projection: pd.DataFrame, x_col: str, y_col: str, output_pat
             alpha=0.72,
             linewidth=0,
         )
+    handle_rows = []
+    for (fam, flow), grp in data.groupby(["signal_family", "flow_condition"]):
+        if "source_label" in grp.columns:
+            label_parts = grp["source_label"].dropna().astype(str).unique()
+            label = "/".join(sorted(label_parts)) if len(label_parts) else str(fam)
+        else:
+            label = str(fam)
+        handle_rows.append((label, fam, flow))
+    handle_rows.sort(key=lambda item: item[0])
     handles = [
-        plt.Line2D([0], [0], marker="o", color="w", markerfacecolor=palette[fam], markersize=6, label=fam)
-        for fam in families
+        plt.Line2D(
+            [0],
+            [0],
+            marker=markers.get(flow, "o"),
+            color="w",
+            markerfacecolor=palette.get(fam, "#333333"),
+            markersize=6,
+            label=label,
+        )
+        for label, fam, flow in handle_rows
     ]
-    plt.legend(handles=handles, title="信号家族", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
+    plt.legend(handles=handles, title="来源标签", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
     plt.xlabel(x_col, fontsize=AXIS_FONT_SIZE)
     plt.ylabel(y_col, fontsize=AXIS_FONT_SIZE)
     plt.title(title, fontsize=TITLE_FONT_SIZE)

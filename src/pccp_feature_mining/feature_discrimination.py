@@ -57,13 +57,54 @@ def _mutual_information(values: np.ndarray, y: np.ndarray, random_state: int) ->
         return 0.0
 
 
+def _metric_record(values: np.ndarray, y: np.ndarray, random_state: int) -> dict[str, float]:
+    pos = values[y == 1]
+    neg = values[y == 0]
+    auc_signed, auc_abs = _safe_auc(y, values)
+    pooled_iqr = np.nanpercentile(values, 75) - np.nanpercentile(values, 25)
+    pooled_iqr = pooled_iqr if pooled_iqr > 0 else np.nanstd(values)
+    median_diff = float(np.nanmedian(pos) - np.nanmedian(neg)) if len(pos) and len(neg) else np.nan
+    w_dist = float(wasserstein_distance(pos, neg)) if len(pos) and len(neg) else np.nan
+    norm_w = float(w_dist / pooled_iqr) if pooled_iqr and pooled_iqr > 0 else np.nan
+    cliff = _cliff_delta(pos, neg)
+    mi = _mutual_information(values, y, random_state=random_state)
+    return {
+        "auc_signed": auc_signed,
+        "auc_abs": auc_abs,
+        "auc_lift": auc_abs - 0.5 if pd.notna(auc_abs) else np.nan,
+        "wasserstein": w_dist,
+        "wasserstein_norm": norm_w,
+        "cliff_delta": cliff,
+        "abs_cliff_delta": abs(cliff) if pd.notna(cliff) else np.nan,
+        "mutual_info": mi,
+        "median_positive": float(np.nanmedian(pos)) if len(pos) else np.nan,
+        "median_negative": float(np.nanmedian(neg)) if len(neg) else np.nan,
+        "median_diff": median_diff,
+    }
+
+
+def _nanmean(records: list[dict[str, float]], key: str) -> float:
+    values = np.asarray([record.get(key, np.nan) for record in records], dtype=float)
+    return float(np.nanmean(values)) if np.isfinite(values).any() else np.nan
+
+
+def _nanstd(records: list[dict[str, float]], key: str) -> float:
+    values = np.asarray([record.get(key, np.nan) for record in records], dtype=float)
+    return float(np.nanstd(values)) if np.isfinite(values).any() else np.nan
+
+
 def evaluate_feature_discrimination(
     frame: pd.DataFrame,
     feature_columns: list[str] | tuple[str, ...],
     random_state: int = 42,
     comparisons: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
+    balance_repeats: int = 1,
 ) -> pd.DataFrame:
-    """对每个特征计算多组二分类判别指标。"""
+    """对每个特征计算多组二分类判别指标。
+
+    当 balance_repeats > 1 且正负样本数量不一致时，每轮把多数类无放回
+    下采样到少数类数量，再对各轮指标取均值，降低类别数量不均衡带来的估计偏差。
+    """
 
     comparisons = COMPARISONS if comparisons is None else comparisons
     x_all = impute_with_median(numeric_feature_frame(frame, feature_columns))
@@ -74,39 +115,64 @@ def evaluate_feature_discrimination(
         mask = labels.isin(positive_labels + negative_labels)
         if not bool(mask.any()):
             continue
-        y = labels.loc[mask].isin(positive_labels).astype(int).to_numpy()
-        x = x_all.loc[mask, :]
+        y_all = labels.loc[mask].isin(positive_labels).astype(int).to_numpy()
+        x = x_all.loc[mask, :].reset_index(drop=True)
+        pos_idx = np.flatnonzero(y_all == 1)
+        neg_idx = np.flatnonzero(y_all == 0)
+        n_pos_total = int(len(pos_idx))
+        n_neg_total = int(len(neg_idx))
+        n_per_class = int(min(n_pos_total, n_neg_total))
+        use_balanced_repeats = bool(balance_repeats > 1 and n_pos_total != n_neg_total and n_per_class > 0)
+        rng = np.random.default_rng(random_state)
+        if use_balanced_repeats:
+            sample_indices = []
+            for _ in range(balance_repeats):
+                pos_sample = pos_idx if n_pos_total == n_per_class else rng.choice(pos_idx, size=n_per_class, replace=False)
+                neg_sample = neg_idx if n_neg_total == n_per_class else rng.choice(neg_idx, size=n_per_class, replace=False)
+                sample_indices.append(np.concatenate([pos_sample, neg_sample]))
+            sample_policy = "balanced_downsample_mean"
+            n_positive = n_per_class
+            n_negative = n_per_class
+            repeat_count = int(balance_repeats)
+        else:
+            sample_indices = [np.arange(len(y_all))]
+            sample_policy = "full_sample"
+            n_positive = n_pos_total
+            n_negative = n_neg_total
+            repeat_count = 1
         for feature in feature_columns:
-            values = x[feature].to_numpy(dtype=float)
-            pos = values[y == 1]
-            neg = values[y == 0]
-            auc_signed, auc_abs = _safe_auc(y, values)
-            pooled_iqr = np.nanpercentile(values, 75) - np.nanpercentile(values, 25)
-            pooled_iqr = pooled_iqr if pooled_iqr > 0 else np.nanstd(values)
-            median_diff = float(np.nanmedian(pos) - np.nanmedian(neg)) if len(pos) and len(neg) else np.nan
-            w_dist = float(wasserstein_distance(pos, neg)) if len(pos) and len(neg) else np.nan
-            norm_w = float(w_dist / pooled_iqr) if pooled_iqr and pooled_iqr > 0 else np.nan
-            cliff = _cliff_delta(pos, neg)
-            mi = _mutual_information(values, y, random_state=random_state)
+            all_values = x[feature].to_numpy(dtype=float)
+            feature_records = [
+                _metric_record(all_values[sample_idx], y_all[sample_idx], random_state=random_state + repeat_idx)
+                for repeat_idx, sample_idx in enumerate(sample_indices)
+            ]
             rows.append(
                 {
                     "comparison": comp_name,
                     "feature": feature,
                     "positive_labels": ",".join(positive_labels),
                     "negative_labels": ",".join(negative_labels),
-                    "n_positive": int((y == 1).sum()),
-                    "n_negative": int((y == 0).sum()),
-                    "auc_signed": auc_signed,
-                    "auc_abs": auc_abs,
-                    "auc_lift": auc_abs - 0.5 if pd.notna(auc_abs) else np.nan,
-                    "wasserstein": w_dist,
-                    "wasserstein_norm": norm_w,
-                    "cliff_delta": cliff,
-                    "abs_cliff_delta": abs(cliff) if pd.notna(cliff) else np.nan,
-                    "mutual_info": mi,
-                    "median_positive": float(np.nanmedian(pos)) if len(pos) else np.nan,
-                    "median_negative": float(np.nanmedian(neg)) if len(neg) else np.nan,
-                    "median_diff": median_diff,
+                    "n_positive": n_positive,
+                    "n_negative": n_negative,
+                    "n_positive_total": n_pos_total,
+                    "n_negative_total": n_neg_total,
+                    "balance_repeats": repeat_count,
+                    "sample_policy": sample_policy,
+                    "auc_signed": _nanmean(feature_records, "auc_signed"),
+                    "auc_abs": _nanmean(feature_records, "auc_abs"),
+                    "auc_abs_std": _nanstd(feature_records, "auc_abs"),
+                    "auc_lift": _nanmean(feature_records, "auc_lift"),
+                    "wasserstein": _nanmean(feature_records, "wasserstein"),
+                    "wasserstein_norm": _nanmean(feature_records, "wasserstein_norm"),
+                    "wasserstein_norm_std": _nanstd(feature_records, "wasserstein_norm"),
+                    "cliff_delta": _nanmean(feature_records, "cliff_delta"),
+                    "abs_cliff_delta": _nanmean(feature_records, "abs_cliff_delta"),
+                    "abs_cliff_delta_std": _nanstd(feature_records, "abs_cliff_delta"),
+                    "mutual_info": _nanmean(feature_records, "mutual_info"),
+                    "mutual_info_std": _nanstd(feature_records, "mutual_info"),
+                    "median_positive": _nanmean(feature_records, "median_positive"),
+                    "median_negative": _nanmean(feature_records, "median_negative"),
+                    "median_diff": _nanmean(feature_records, "median_diff"),
                 }
             )
 

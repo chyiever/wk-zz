@@ -1272,3 +1272,27 @@
   - 08 最终特征评价：补充 final_score 加权公式、各符号来源、A/B/C 分级规则。
   - 09 分类测试：补充 balanced_accuracy / recall_positive / specificity 指标公式与严格划分规则说明。
 - 校验：notebook JSON 通过 json.load 校验；所有改动单元格内容与源码实现（feature_discrimination.py、combination_search.py、bootstrap_stability.py、feature_redundancy.py、feature_selection.py、cross_flow_analysis.py）核对一致；已修复单元格内 `|Spearman|` 破坏 Markdown 表格问题与"同源信泄漏"错别字。
+
+## 2026-09-08（补充）PCCP第二节来源类别样本量稳定性估计
+
+- 变更范围：
+  - `src/pccp_feature_mining/config.py`
+  - `src/pccp_feature_mining/distribution_analysis.py`
+  - `src/pccp_feature_mining/run_all.py`
+  - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb`
+  - `docs/2026-9-6-PCCP断丝特征挖掘_Codex开发方案_修正版.md`
+- notebook 第二节末尾新增 `2.7 每个来源类别的特征均值何时趋于稳定`，按 `source_label` 分别估计 `BK00/BK05/FL00/FL05/QJ00/QJ05` 的样本量稳定区间。
+- 新增两种独立估计方式：
+  - 相邻样本量均值漂移法：对全局标准化后的候选特征均值向量，计算相邻样本量之间的相对 L2 变化；连续低于 `sample_stability_adjacent_threshold=0.02` 时判为稳定。
+  - 全量均值参照 Bootstrap 误差法：以当前来源类别全量样本的标准化特征均值向量为参照，重复无放回子采样，计算均值向量相对误差 P90；连续低于 `sample_stability_reference_threshold=0.05` 时判为稳定。
+- `MiningConfig` 新增样本量稳定性参数：
+  - `sample_stability_repeats=100`
+  - `sample_stability_min_samples=5`
+  - `sample_stability_adjacent_threshold=0.02`
+  - `sample_stability_reference_threshold=0.05`
+  - `sample_stability_consecutive_points=2`
+- `run_pccp_feature_mining()` 已接入该分析，输出：
+  - `sample_stability_curve.csv`
+  - `sample_stability_summary.csv`
+  - `plots/sample_stability_curves.png`
+- 该分析只回答每个来源类别当前特征均值统计量何时趋于稳定，不参与第 06 节 Bootstrap 特征排名稳定性，也不改变最终特征评分公式。
