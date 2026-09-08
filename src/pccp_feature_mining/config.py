@@ -38,7 +38,7 @@ class MiningConfig:
     sample_stability_repeats: int = 100
     sample_stability_min_samples: int = 5
     sample_stability_adjacent_threshold: float = 0.02
-    sample_stability_reference_threshold: float = 0.05
+    sample_stability_pairwise_threshold: float = 0.05
     sample_stability_consecutive_points: int = 2
     combination_feature_counts: tuple[int, ...] = (5, 10, 20, 30, 50)
     sfs_candidate_count: int = 30

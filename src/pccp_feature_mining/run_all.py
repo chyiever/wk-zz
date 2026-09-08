@@ -102,7 +102,7 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         repeats=cfg.sample_stability_repeats,
         min_samples=cfg.sample_stability_min_samples,
         adjacent_threshold=cfg.sample_stability_adjacent_threshold,
-        reference_threshold=cfg.sample_stability_reference_threshold,
+        pairwise_threshold=cfg.sample_stability_pairwise_threshold,
         consecutive_points=cfg.sample_stability_consecutive_points,
         random_state=cfg.random_state,
     )

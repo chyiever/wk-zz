@@ -138,7 +138,7 @@ FL：
 -   2.7 小节新增按来源类别的样本量稳定性估计，不参与最终特征评分，只用于判断 `BK00/BK05/FL00/FL05/QJ00/QJ05` 每类信号的均值统计量在多少样本后趋于稳定。
 -   2.7 给出两种独立估计方式：
     -   相邻样本量均值漂移法：比较相邻样本量下标准化特征均值向量的相对 L2 变化，连续低于 `sample_stability_adjacent_threshold` 判为稳定。
-    -   全量均值参照 Bootstrap 误差法：把当前该来源类别的全量均值向量作为参照，重复子采样后计算均值向量相对误差 P90，连续低于 `sample_stability_reference_threshold` 判为稳定。
+    -   双Bootstrap均值一致性法：同一样本量下独立抽取两组 bootstrap 子样本，比较两组标准化特征均值向量的相对 L2 差异 P90，连续低于 `sample_stability_pairwise_threshold` 判为稳定。
 -   2.7 输出 `sample_stability_curve.csv`、`sample_stability_summary.csv` 和 `plots/sample_stability_curves.png`；建议样本量取两种方法稳定样本量中较大的一个。
 
 ------------------------------------------------------------------------

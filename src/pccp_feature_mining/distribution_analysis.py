@@ -262,7 +262,8 @@ def estimate_source_feature_stability(
     repeats: int = 100,
     min_samples: int = 5,
     adjacent_threshold: float = 0.02,
-    reference_threshold: float = 0.05,
+    pairwise_threshold: float = 0.05,
+    reference_threshold: float | None = None,
     consecutive_points: int = 2,
     random_state: int = 42,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -271,12 +272,14 @@ def estimate_source_feature_stability(
     Two independent estimates are reported:
     1. adjacent mean drift: relative L2 change between the averaged mean vector at n_i
        and n_(i-1);
-    2. full-reference bootstrap error: repeated subsample mean-vector error against the
-       full-label mean vector.
+    2. paired bootstrap agreement: relative L2 gap between two independent bootstrap
+       mean vectors at the same sample size.
     """
 
     if label_col not in frame.columns:
         raise KeyError(f"{label_col!r} not found in frame")
+    if reference_threshold is not None:
+        pairwise_threshold = float(reference_threshold)
     if not feature_columns:
         empty_curve_cols = [
             label_col,
@@ -284,19 +287,20 @@ def estimate_source_feature_stability(
             "sample_size",
             "previous_sample_size",
             "adjacent_mean_rel_l2_change",
-            "reference_mean_rel_l2_error_mean",
-            "reference_mean_rel_l2_error_p90",
+            "paired_bootstrap_rel_l2_gap_mean",
+            "paired_bootstrap_rel_l2_gap_p90",
             "repeats_used",
+            "is_full_sample_size",
         ]
         empty_summary_cols = [
             label_col,
             "total_rows",
             "stable_sample_size_adjacent_mean",
-            "stable_sample_size_reference_error",
+            "stable_sample_size_pairwise_bootstrap",
             "recommended_stable_sample_size",
             "stability_status",
             "adjacent_threshold",
-            "reference_threshold",
+            "pairwise_threshold",
         ]
         return pd.DataFrame(columns=empty_curve_cols), pd.DataFrame(columns=empty_summary_cols)
 
@@ -322,26 +326,29 @@ def estimate_source_feature_stability(
         if total_rows not in sizes:
             sizes.append(total_rows)
 
-        full_mean = group.mean(axis=0)
-        full_norm = float(np.linalg.norm(full_mean)) + eps
         mean_vectors: dict[int, np.ndarray] = {}
-        ref_mean_errors: dict[int, float] = {}
-        ref_p90_errors: dict[int, float] = {}
+        pairwise_mean_gaps: dict[int, float] = {}
+        pairwise_p90_gaps: dict[int, float] = {}
         repeats_used: dict[int, int] = {}
 
         for size in sizes:
-            current_repeats = 1 if size >= total_rows else max(int(repeats), 1)
+            current_repeats = max(int(repeats), 1)
             sample_means = np.empty((current_repeats, group.shape[1]), dtype=float)
+            pairwise_gaps = np.empty(current_repeats, dtype=float)
             for rep in range(current_repeats):
-                if size >= total_rows:
-                    picked = np.arange(total_rows)
-                else:
-                    picked = rng.choice(total_rows, size=size, replace=False)
+                replace_single = size >= total_rows
+                picked = rng.choice(total_rows, size=size, replace=replace_single)
                 sample_means[rep, :] = group[picked, :].mean(axis=0)
+
+                paired_a = rng.choice(total_rows, size=size, replace=True)
+                paired_b = rng.choice(total_rows, size=size, replace=True)
+                mean_a = group[paired_a, :].mean(axis=0)
+                mean_b = group[paired_b, :].mean(axis=0)
+                scale = 0.5 * (float(np.linalg.norm(mean_a)) + float(np.linalg.norm(mean_b))) + eps
+                pairwise_gaps[rep] = float(np.linalg.norm(mean_a - mean_b) / scale)
             mean_vectors[size] = sample_means.mean(axis=0)
-            errors = np.linalg.norm(sample_means - full_mean, axis=1) / full_norm
-            ref_mean_errors[size] = float(np.mean(errors))
-            ref_p90_errors[size] = float(np.percentile(errors, 90))
+            pairwise_mean_gaps[size] = float(np.mean(pairwise_gaps))
+            pairwise_p90_gaps[size] = float(np.percentile(pairwise_gaps, 90))
             repeats_used[size] = int(current_repeats)
 
         adjacent_changes: list[float] = []
@@ -361,19 +368,20 @@ def estimate_source_feature_stability(
                     "sample_size": int(size),
                     "previous_sample_size": previous_size,
                     "adjacent_mean_rel_l2_change": adjacent_change,
-                    "reference_mean_rel_l2_error_mean": ref_mean_errors[size],
-                    "reference_mean_rel_l2_error_p90": ref_p90_errors[size],
+                    "paired_bootstrap_rel_l2_gap_mean": pairwise_mean_gaps[size],
+                    "paired_bootstrap_rel_l2_gap_p90": pairwise_p90_gaps[size],
                     "repeats_used": repeats_used[size],
+                    "is_full_sample_size": bool(size >= total_rows),
                 }
             )
             previous_size = int(size)
 
-        ref_values = [ref_p90_errors[size] for size in sizes]
+        pairwise_values = [pairwise_p90_gaps[size] for size in sizes]
         stable_adjacent = _first_stable_size(adjacent_changes, sizes, adjacent_threshold, consecutive_points)
-        stable_reference = _first_stable_size(ref_values, sizes, reference_threshold, consecutive_points)
-        stable_candidates = [v for v in [stable_adjacent, stable_reference] if np.isfinite(v)]
+        stable_pairwise = _first_stable_size(pairwise_values, sizes, pairwise_threshold, consecutive_points)
+        stable_candidates = [v for v in [stable_adjacent, stable_pairwise] if np.isfinite(v)]
         recommended = int(max(stable_candidates)) if stable_candidates else np.nan
-        if np.isfinite(stable_adjacent) and np.isfinite(stable_reference):
+        if np.isfinite(stable_adjacent) and np.isfinite(stable_pairwise):
             status = "two_methods_stable"
         elif stable_candidates:
             status = "one_method_stable"
@@ -385,16 +393,16 @@ def estimate_source_feature_stability(
                 label_col: label,
                 "total_rows": total_rows,
                 "stable_sample_size_adjacent_mean": stable_adjacent,
-                "stable_sample_size_reference_error": stable_reference,
+                "stable_sample_size_pairwise_bootstrap": stable_pairwise,
                 "recommended_stable_sample_size": recommended,
                 "stability_status": status,
                 "adjacent_threshold": float(adjacent_threshold),
-                "reference_threshold": float(reference_threshold),
+                "pairwise_threshold": float(pairwise_threshold),
                 "consecutive_points": int(max(consecutive_points, 1)),
                 "min_sample_size_checked": int(min(sizes)),
                 "max_sample_size_checked": int(max(sizes)),
                 "final_adjacent_mean_rel_l2_change": adjacent_changes[-1],
-                "final_reference_mean_rel_l2_error_p90": ref_p90_errors[sizes[-1]],
+                "final_paired_bootstrap_rel_l2_gap_p90": pairwise_p90_gaps[sizes[-1]],
             }
         )
 
@@ -410,7 +418,7 @@ def plot_source_feature_stability_curves(
     output_path: Path,
     label_col: str = "source_label",
 ) -> None:
-    """Plot adjacent-mean drift and full-reference error curves by source label."""
+    """Plot adjacent-mean drift and paired-bootstrap agreement curves by source label."""
 
     if curve.empty or label_col not in curve.columns:
         return
@@ -418,7 +426,7 @@ def plot_source_feature_stability_curves(
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.2), sharex=False)
     metrics = [
         ("adjacent_mean_rel_l2_change", "相邻均值向量相对变化"),
-        ("reference_mean_rel_l2_error_p90", "相对全量均值误差P90"),
+        ("paired_bootstrap_rel_l2_gap_p90", "双Bootstrap均值差异P90"),
     ]
     for ax, (metric, title) in zip(axes, metrics):
         for label, grp in curve.groupby(label_col):

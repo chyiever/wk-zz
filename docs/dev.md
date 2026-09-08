@@ -1284,15 +1284,17 @@
 - notebook 第二节末尾新增 `2.7 每个来源类别的特征均值何时趋于稳定`，按 `source_label` 分别估计 `BK00/BK05/FL00/FL05/QJ00/QJ05` 的样本量稳定区间。
 - 新增两种独立估计方式：
   - 相邻样本量均值漂移法：对全局标准化后的候选特征均值向量，计算相邻样本量之间的相对 L2 变化；连续低于 `sample_stability_adjacent_threshold=0.02` 时判为稳定。
-  - 全量均值参照 Bootstrap 误差法：以当前来源类别全量样本的标准化特征均值向量为参照，重复无放回子采样，计算均值向量相对误差 P90；连续低于 `sample_stability_reference_threshold=0.05` 时判为稳定。
+  - 双Bootstrap均值一致性法：同一样本量下独立抽取两组 bootstrap 子样本，比较两组标准化特征均值向量的相对 L2 差异 P90；连续低于 `sample_stability_pairwise_threshold=0.05` 时判为稳定。
 - `MiningConfig` 新增样本量稳定性参数：
   - `sample_stability_repeats=100`
   - `sample_stability_min_samples=5`
   - `sample_stability_adjacent_threshold=0.02`
-  - `sample_stability_reference_threshold=0.05`
+  - `sample_stability_pairwise_threshold=0.05`
   - `sample_stability_consecutive_points=2`
 - `run_pccp_feature_mining()` 已接入该分析，输出：
   - `sample_stability_curve.csv`
   - `sample_stability_summary.csv`
   - `plots/sample_stability_curves.png`
 - 该分析只回答每个来源类别当前特征均值统计量何时趋于稳定，不参与第 06 节 Bootstrap 特征排名稳定性，也不改变最终特征评分公式。
+- 2026-09-08 修正：旧版“全量均值参照法”在样本量等于当前全量样本数时会与自身比较，导致最大样本量处相对 L2 误差天然接近 0，并可能造成“每类都刚好在现有最大样本量稳定”的假象；已改为双Bootstrap均值一致性法，最大样本量处也使用有放回抽样比较两个独立均值估计，不再强制归零。
+- notebook 显示工具新增 `sync_output_counters()`，每个产生表/图的代码单元会先把计数器同步到该单元在全 notebook 中的预期位置，避免单独重跑 2.7 时出现“表 8 / 图 1”这类局部编号。
