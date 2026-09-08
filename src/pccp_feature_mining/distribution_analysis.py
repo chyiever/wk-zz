@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -199,6 +200,62 @@ def compute_kde_overlap_summary(
     return pd.DataFrame(rows).sort_values(["kde_separation_mean", "kde_separation_max"], ascending=[False, False])
 
 
+def select_bk_0_30ms_samples(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Select one 0-30 ms feature row per BK event and report the selection audit.
+
+    Each physical BK event is expanded into six overlapping windows during feature
+    extraction.  Sample-size analyses must not count those correlated rows as six
+    independent observations, so this selector keeps only the canonical ``0_30``
+    window and verifies that an event does not contribute more than one row.
+    """
+
+    required = {"source_label", "event_id", "window_mode", "window_start_ms", "window_end_ms"}
+    missing = sorted(required.difference(frame.columns))
+    if missing:
+        raise KeyError(f"BK 0-30 ms selection requires columns: {', '.join(missing)}")
+
+    labels = frame["source_label"].astype(str)
+    bk = frame.loc[labels.str.startswith("BK")].copy()
+    if bk.empty:
+        raise ValueError("No BK rows were found for the 0-30 ms sample analysis")
+
+    starts = pd.to_numeric(bk["window_start_ms"], errors="coerce").to_numpy(dtype=float)
+    ends = pd.to_numeric(bk["window_end_ms"], errors="coerce").to_numpy(dtype=float)
+    target_mask = (
+        bk["window_mode"].astype(str).str.strip().eq("0_30").to_numpy()
+        & np.isclose(starts, 0.0, rtol=0.0, atol=1e-6)
+        & np.isclose(ends, 30.0, rtol=0.0, atol=1e-6)
+    )
+    selected = bk.loc[target_mask].copy()
+
+    audit_rows: list[dict[str, object]] = []
+    for label, group in bk.groupby("source_label", sort=True):
+        group_target = selected.loc[selected["source_label"].astype(str).eq(str(label))]
+        target_counts = group_target.groupby("event_id", dropna=False).size()
+        all_events = group["event_id"].nunique(dropna=False)
+        audit_rows.append(
+            {
+                "source_label": str(label),
+                "all_derived_window_rows": int(len(group)),
+                "all_bk_events": int(all_events),
+                "selected_0_30ms_rows": int(len(group_target)),
+                "selected_bk_events": int(group_target["event_id"].nunique(dropna=False)),
+                "excluded_derived_window_rows": int(len(group) - len(group_target)),
+                "events_missing_0_30ms_window": int(all_events - group_target["event_id"].nunique(dropna=False)),
+                "duplicate_0_30ms_rows": int(target_counts.sub(1).clip(lower=0).sum()),
+            }
+        )
+
+    audit = pd.DataFrame(audit_rows)
+    duplicate_mask = selected.duplicated(subset=["source_label", "event_id"], keep=False)
+    if bool(duplicate_mask.any()):
+        duplicate_events = selected.loc[duplicate_mask, "event_id"].astype(str).nunique()
+        raise ValueError(f"Found duplicate 0-30 ms rows for {duplicate_events} BK event(s)")
+    if selected.empty:
+        raise ValueError("No BK rows matched window_mode='0_30' with 0-30 ms boundaries")
+    return selected, audit
+
+
 def _default_sample_sizes(total_rows: int, min_samples: int = 5) -> list[int]:
     """Build readable sample-size checkpoints up to the available rows."""
 
@@ -259,9 +316,9 @@ def estimate_source_feature_stability(
     feature_columns: list[str] | tuple[str, ...],
     label_col: str = "source_label",
     sample_sizes: list[int] | tuple[int, ...] | None = None,
+    sample_sizes_by_label: dict[str, list[int] | tuple[int, ...]] | None = None,
     repeats: int = 100,
     min_samples: int = 5,
-    adjacent_threshold: float = 0.02,
     pairwise_threshold: float = 0.05,
     reference_threshold: float | None = None,
     consecutive_points: int = 2,
@@ -269,11 +326,21 @@ def estimate_source_feature_stability(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Estimate when each source label has enough samples for stable feature means.
 
-    Two independent estimates are reported:
-    1. adjacent mean drift: relative L2 change between the averaged mean vector at n_i
-       and n_(i-1);
-    2. paired bootstrap agreement: relative L2 gap between two independent bootstrap
-       mean vectors at the same sample size.
+    Each source label is processed independently. Missing-value imputation, feature
+    scaling and the random stream are all label-local, so adding, removing or
+    reordering other labels cannot change a label's curve.
+
+    At each sample size, two independent bootstrap mean vectors are compared with
+    the standardized RMS gap::
+
+        sqrt(mean(((mean_a - mean_b) / within_label_std) ** 2))
+
+    The metric is translation invariant and is expressed in units of the label's
+    within-class feature standard deviation. Both the mean and P90 of repeated
+    bootstrap gaps are reported; the conservative P90 drives the stability decision.
+
+    ``sample_sizes_by_label`` overrides the shared/default grid for selected labels,
+    allowing small groups to use every integer while large groups keep sparse points.
     """
 
     if label_col not in frame.columns:
@@ -285,124 +352,95 @@ def estimate_source_feature_stability(
             label_col,
             "total_rows",
             "sample_size",
-            "previous_sample_size",
-            "adjacent_mean_rel_l2_change",
-            "paired_bootstrap_rel_l2_gap_mean",
-            "paired_bootstrap_rel_l2_gap_p90",
+            "paired_bootstrap_standardized_rms_gap_mean",
+            "paired_bootstrap_standardized_rms_gap_p90",
             "repeats_used",
             "is_full_sample_size",
         ]
         empty_summary_cols = [
             label_col,
             "total_rows",
-            "stable_sample_size_adjacent_mean",
             "stable_sample_size_pairwise_bootstrap",
             "recommended_stable_sample_size",
             "stability_status",
-            "adjacent_threshold",
             "pairwise_threshold",
         ]
         return pd.DataFrame(columns=empty_curve_cols), pd.DataFrame(columns=empty_summary_cols)
 
-    rng = np.random.default_rng(random_state)
-    x = impute_with_median(numeric_feature_frame(frame, feature_columns))
-    scaled = pd.DataFrame(StandardScaler().fit_transform(x), columns=list(feature_columns), index=frame.index)
     labels = frame[label_col].astype(str)
     curve_rows: list[dict[str, object]] = []
     summary_rows: list[dict[str, object]] = []
-    eps = 1e-12
 
     for label in sorted(labels.dropna().unique()):
-        idx = labels[labels.eq(label)].index
-        group = scaled.loc[idx, :].to_numpy(dtype=float)
+        label_mask = labels.eq(label).to_numpy()
+        group_frame = impute_with_median(numeric_feature_frame(frame.loc[label_mask, :], feature_columns))
+        raw_group = group_frame.to_numpy(dtype=float)
+        scaler = StandardScaler().fit(raw_group)
+        group = scaler.transform(raw_group)
         total_rows = int(group.shape[0])
         if total_rows == 0:
             continue
 
-        sizes = list(sample_sizes) if sample_sizes is not None else _default_sample_sizes(total_rows, min_samples)
+        seed_payload = f"{int(random_state)}\0{label}".encode("utf-8")
+        label_seed = int.from_bytes(hashlib.sha256(seed_payload).digest()[:8], "little")
+        rng = np.random.default_rng(label_seed)
+
+        label_sample_sizes = None if sample_sizes_by_label is None else sample_sizes_by_label.get(str(label))
+        configured_sizes = label_sample_sizes if label_sample_sizes is not None else sample_sizes
+        sizes = list(configured_sizes) if configured_sizes is not None else _default_sample_sizes(total_rows, min_samples)
         sizes = sorted({int(n) for n in sizes if 1 <= int(n) <= total_rows})
         if not sizes:
             continue
         if total_rows not in sizes:
             sizes.append(total_rows)
 
-        mean_vectors: dict[int, np.ndarray] = {}
         pairwise_mean_gaps: dict[int, float] = {}
         pairwise_p90_gaps: dict[int, float] = {}
         repeats_used: dict[int, int] = {}
 
         for size in sizes:
             current_repeats = max(int(repeats), 1)
-            sample_means = np.empty((current_repeats, group.shape[1]), dtype=float)
             pairwise_gaps = np.empty(current_repeats, dtype=float)
             for rep in range(current_repeats):
-                replace_single = size >= total_rows
-                picked = rng.choice(total_rows, size=size, replace=replace_single)
-                sample_means[rep, :] = group[picked, :].mean(axis=0)
-
                 paired_a = rng.choice(total_rows, size=size, replace=True)
                 paired_b = rng.choice(total_rows, size=size, replace=True)
                 mean_a = group[paired_a, :].mean(axis=0)
                 mean_b = group[paired_b, :].mean(axis=0)
-                scale = 0.5 * (float(np.linalg.norm(mean_a)) + float(np.linalg.norm(mean_b))) + eps
-                pairwise_gaps[rep] = float(np.linalg.norm(mean_a - mean_b) / scale)
-            mean_vectors[size] = sample_means.mean(axis=0)
+                pairwise_gaps[rep] = float(np.sqrt(np.mean(np.square(mean_a - mean_b))))
             pairwise_mean_gaps[size] = float(np.mean(pairwise_gaps))
             pairwise_p90_gaps[size] = float(np.percentile(pairwise_gaps, 90))
             repeats_used[size] = int(current_repeats)
 
-        adjacent_changes: list[float] = []
-        previous_size: int | None = None
         for size in sizes:
-            if previous_size is None:
-                adjacent_change = np.nan
-            else:
-                previous = mean_vectors[previous_size]
-                current = mean_vectors[size]
-                adjacent_change = float(np.linalg.norm(current - previous) / (np.linalg.norm(previous) + eps))
-            adjacent_changes.append(adjacent_change)
             curve_rows.append(
                 {
                     label_col: label,
                     "total_rows": total_rows,
                     "sample_size": int(size),
-                    "previous_sample_size": previous_size,
-                    "adjacent_mean_rel_l2_change": adjacent_change,
-                    "paired_bootstrap_rel_l2_gap_mean": pairwise_mean_gaps[size],
-                    "paired_bootstrap_rel_l2_gap_p90": pairwise_p90_gaps[size],
+                    "paired_bootstrap_standardized_rms_gap_mean": pairwise_mean_gaps[size],
+                    "paired_bootstrap_standardized_rms_gap_p90": pairwise_p90_gaps[size],
                     "repeats_used": repeats_used[size],
                     "is_full_sample_size": bool(size >= total_rows),
                 }
             )
-            previous_size = int(size)
 
         pairwise_values = [pairwise_p90_gaps[size] for size in sizes]
-        stable_adjacent = _first_stable_size(adjacent_changes, sizes, adjacent_threshold, consecutive_points)
         stable_pairwise = _first_stable_size(pairwise_values, sizes, pairwise_threshold, consecutive_points)
-        stable_candidates = [v for v in [stable_adjacent, stable_pairwise] if np.isfinite(v)]
-        recommended = int(max(stable_candidates)) if stable_candidates else np.nan
-        if np.isfinite(stable_adjacent) and np.isfinite(stable_pairwise):
-            status = "two_methods_stable"
-        elif stable_candidates:
-            status = "one_method_stable"
-        else:
-            status = "not_stable_with_current_rows"
+        recommended = int(stable_pairwise) if np.isfinite(stable_pairwise) else np.nan
+        status = "stable" if np.isfinite(stable_pairwise) else "not_stable_with_current_rows"
 
         summary_rows.append(
             {
                 label_col: label,
                 "total_rows": total_rows,
-                "stable_sample_size_adjacent_mean": stable_adjacent,
                 "stable_sample_size_pairwise_bootstrap": stable_pairwise,
                 "recommended_stable_sample_size": recommended,
                 "stability_status": status,
-                "adjacent_threshold": float(adjacent_threshold),
                 "pairwise_threshold": float(pairwise_threshold),
                 "consecutive_points": int(max(consecutive_points, 1)),
                 "min_sample_size_checked": int(min(sizes)),
                 "max_sample_size_checked": int(max(sizes)),
-                "final_adjacent_mean_rel_l2_change": adjacent_changes[-1],
-                "final_paired_bootstrap_rel_l2_gap_p90": pairwise_p90_gaps[sizes[-1]],
+                "final_paired_bootstrap_standardized_rms_gap_p90": pairwise_p90_gaps[sizes[-1]],
             }
         )
 
@@ -418,15 +456,15 @@ def plot_source_feature_stability_curves(
     output_path: Path,
     label_col: str = "source_label",
 ) -> None:
-    """Plot adjacent-mean drift and paired-bootstrap agreement curves by source label."""
+    """Plot label-local paired-bootstrap stability curves by source label."""
 
     if curve.empty or label_col not in curve.columns:
         return
     _configure_font()
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.2), sharex=False)
     metrics = [
-        ("adjacent_mean_rel_l2_change", "相邻均值向量相对变化"),
-        ("paired_bootstrap_rel_l2_gap_p90", "双Bootstrap均值差异P90"),
+        ("paired_bootstrap_standardized_rms_gap_mean", "双Bootstrap标准化均值差异"),
+        ("paired_bootstrap_standardized_rms_gap_p90", "双Bootstrap标准化均值差异P90"),
     ]
     for ax, (metric, title) in zip(axes, metrics):
         for label, grp in curve.groupby(label_col):
@@ -436,12 +474,12 @@ def plot_source_feature_stability_curves(
             ax.plot(valid["sample_size"], valid[metric], marker="o", linewidth=1.4, markersize=3.5, label=str(label))
         ax.set_xscale("log")
         ax.set_xlabel("样本量 n", fontsize=AXIS_FONT_SIZE)
-        ax.set_ylabel("相对L2误差", fontsize=AXIS_FONT_SIZE)
+        ax.set_ylabel("类内标准化RMS误差", fontsize=AXIS_FONT_SIZE)
         ax.set_title(title, fontsize=TITLE_FONT_SIZE)
         ax.grid(True, alpha=0.25)
         ax.tick_params(labelsize=TICK_FONT_SIZE)
     axes[0].legend(title="来源类别", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
-    fig.suptitle("各来源类别特征均值稳定性估计", fontsize=TITLE_FONT_SIZE)
+    fig.suptitle("各来源类别独立计算的特征均值稳定性", fontsize=TITLE_FONT_SIZE)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")

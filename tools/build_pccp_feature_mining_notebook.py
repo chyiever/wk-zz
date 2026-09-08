@@ -217,11 +217,14 @@ show_table('读取异常与低有效特征行审计', load_issues)
         code(
             """
 from pccp_feature_mining.distribution_analysis import (
+    estimate_source_feature_stability,
+    plot_source_feature_stability_curves,
     select_distribution_features,
     run_pca_projection,
     run_umap_projection,
     plot_feature_kde_by_label,
     plot_projection,
+    select_bk_0_30ms_samples,
 )
 from pccp_feature_mining.visualization import plot_final_ranking, plot_top_feature_boxplots
 
@@ -252,6 +255,103 @@ show_image('六类特征KDE分布图', kde_path)
 show_image('六类特征PCA投影图', pca_path)
 if not umap_projection.empty:
     show_image('六类特征UMAP投影图', umap_path)
+"""
+        )
+    )
+
+    cells.append(
+        md(
+            """
+### 2.7.1 全部派生窗口的来源类别特征均值稳定性
+
+对 `BK00/BK05/FL00/FL05/QJ00/QJ05` 的全部有效特征行估计均值稳定性。六类分别进行类内中位数插补、类内标准差归一化和独立 Bootstrap，任一类别的曲线不受其他类别是否加入影响。误差为两组 Bootstrap 均值向量的类内标准化 RMS 差异；该无量纲数值可比较各类的相对抽样稳定性，但不表示原始信号幅值差异。BK 的每个物理事件会派生六个相互重叠的窗口，因此这里的 BK 行数不能解释为独立事件数；独立事件口径见 2.7.2。
+"""
+        )
+    )
+    cells.append(
+        code(
+            """
+sample_stability_curve, sample_stability_summary = estimate_source_feature_stability(
+    df,
+    feature_cols,
+    repeats=CONFIG.sample_stability_repeats,
+    min_samples=CONFIG.sample_stability_min_samples,
+    pairwise_threshold=CONFIG.sample_stability_pairwise_threshold,
+    consecutive_points=CONFIG.sample_stability_consecutive_points,
+    random_state=CONFIG.random_state,
+)
+write_csv(sample_stability_curve, RUN_DIR / 'sample_stability_curve.csv')
+write_csv(sample_stability_summary, RUN_DIR / 'sample_stability_summary.csv')
+sample_stability_plot_path = RUN_DIR / 'plots/sample_stability_curves.png'
+plot_source_feature_stability_curves(sample_stability_curve, sample_stability_plot_path)
+
+sample_stability_parameter_table = pd.DataFrame([
+    {'参数': 'sample_stability_repeats', '当前值': CONFIG.sample_stability_repeats, '含义': '每个样本量重复抽样次数'},
+    {'参数': 'sample_stability_min_samples', '当前值': CONFIG.sample_stability_min_samples, '含义': '自动样本量网格的最小起点'},
+    {'参数': 'sample_stability_pairwise_threshold', '当前值': CONFIG.sample_stability_pairwise_threshold, '含义': '双Bootstrap类内标准化RMS差异P90稳定阈值'},
+    {'参数': 'sample_stability_consecutive_points', '当前值': CONFIG.sample_stability_consecutive_points, '含义': '连续满足阈值的样本量点数'},
+])
+show_table('2.7.1 全部派生窗口样本量稳定性估计参数', sample_stability_parameter_table)
+show_table('2.7.1 各来源类别建议稳定样本量', sample_stability_summary)
+show_table('2.7.1 全部派生窗口样本量稳定性曲线明细', sample_stability_curve, rows=60)
+show_image('2.7.1 各来源类别特征均值稳定性曲线', sample_stability_plot_path)
+"""
+        )
+    )
+
+    cells.append(
+        md(
+            """
+### 2.7.2 BK 断丝事件的 0-30 ms 单窗口样本稳定性
+
+一个物理 BK 事件会派生六个重叠窗口。本小节只保留 `window_mode='0_30'` 且实际边界为 0-30 ms 的窗口，保证每个 `event_id` 最多贡献一个样本，再分别测试 `BK00` 和 `BK05` 的均值稳定性。图中同时加入 FL00、FL05、QJ00、QJ05；六类均独立进行插补、尺度估计和 Bootstrap，加入其他类别不会改变任一类别的误差曲线。
+"""
+        )
+    )
+    cells.append(
+        code(
+            """
+from pccp_feature_mining.distribution_analysis import (
+    estimate_source_feature_stability,
+    plot_source_feature_stability_curves,
+    select_bk_0_30ms_samples,
+)
+
+bk_0_30ms_df, bk_0_30ms_selection_audit = select_bk_0_30ms_samples(df)
+bk_0_30ms_sample_sizes_by_label = {
+    str(label): list(range(min(max(int(CONFIG.sample_stability_min_samples), 1), len(group)), len(group) + 1))
+    for label, group in bk_0_30ms_df.groupby('source_label', sort=True)
+}
+non_bk_df = df.loc[~df['source_label'].astype(str).str.startswith('BK')]
+bk_0_30ms_comparison_df = pd.concat([non_bk_df, bk_0_30ms_df], axis=0)
+bk_0_30ms_comparison_curve, bk_0_30ms_comparison_summary = estimate_source_feature_stability(
+    bk_0_30ms_comparison_df,
+    feature_cols,
+    sample_sizes_by_label=bk_0_30ms_sample_sizes_by_label,
+    repeats=CONFIG.sample_stability_repeats,
+    min_samples=CONFIG.sample_stability_min_samples,
+    pairwise_threshold=CONFIG.sample_stability_pairwise_threshold,
+    consecutive_points=CONFIG.sample_stability_consecutive_points,
+    random_state=CONFIG.random_state,
+)
+bk_0_30ms_stability_curve = bk_0_30ms_comparison_curve.loc[
+    bk_0_30ms_comparison_curve['source_label'].astype(str).str.startswith('BK')
+].copy()
+bk_0_30ms_stability_summary = bk_0_30ms_comparison_summary.loc[
+    bk_0_30ms_comparison_summary['source_label'].astype(str).str.startswith('BK')
+].copy()
+write_csv(bk_0_30ms_selection_audit, RUN_DIR / 'bk_0_30ms_selection_audit.csv')
+write_csv(bk_0_30ms_stability_curve, RUN_DIR / 'bk_0_30ms_sample_stability_curve.csv')
+write_csv(bk_0_30ms_stability_summary, RUN_DIR / 'bk_0_30ms_sample_stability_summary.csv')
+write_csv(bk_0_30ms_comparison_curve, RUN_DIR / 'bk_0_30ms_with_nonbk_sample_stability_curve.csv')
+write_csv(bk_0_30ms_comparison_summary, RUN_DIR / 'bk_0_30ms_with_nonbk_sample_stability_summary.csv')
+bk_0_30ms_stability_plot_path = RUN_DIR / 'plots/bk_0_30ms_with_nonbk_sample_stability_curves.png'
+plot_source_feature_stability_curves(bk_0_30ms_comparison_curve, bk_0_30ms_stability_plot_path)
+
+show_table('2.7.2 BK 0-30 ms窗口筛选审计', bk_0_30ms_selection_audit)
+show_table('2.7.2 BK 0-30 ms单窗口建议稳定样本量', bk_0_30ms_stability_summary)
+show_table('2.7.2 BK 0-30 ms单窗口样本量稳定性曲线明细', bk_0_30ms_stability_curve, rows=60)
+show_image('2.7.2 BK 0-30 ms单窗口校正后的六类特征均值稳定性曲线', bk_0_30ms_stability_plot_path)
 """
         )
     )

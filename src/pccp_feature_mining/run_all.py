@@ -20,6 +20,7 @@ from .distribution_analysis import (
     plot_source_feature_stability_curves,
     run_pca_projection,
     run_umap_projection,
+    select_bk_0_30ms_samples,
     select_distribution_features,
 )
 from .feature_discrimination import evaluate_feature_discrimination
@@ -101,7 +102,6 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
         feature_columns,
         repeats=cfg.sample_stability_repeats,
         min_samples=cfg.sample_stability_min_samples,
-        adjacent_threshold=cfg.sample_stability_adjacent_threshold,
         pairwise_threshold=cfg.sample_stability_pairwise_threshold,
         consecutive_points=cfg.sample_stability_consecutive_points,
         random_state=cfg.random_state,
@@ -111,6 +111,39 @@ def run_pccp_feature_mining(config: MiningConfig | None = None) -> dict[str, obj
     plot_source_feature_stability_curves(
         sample_stability_curve,
         output_dir / "plots/sample_stability_curves.png",
+    )
+
+    bk_0_30ms_frame, bk_0_30ms_selection_audit = select_bk_0_30ms_samples(frame)
+    bk_0_30ms_sample_sizes_by_label = {
+        str(label): list(range(min(max(int(cfg.sample_stability_min_samples), 1), len(group)), len(group) + 1))
+        for label, group in bk_0_30ms_frame.groupby("source_label", sort=True)
+    }
+    non_bk_frame = frame.loc[~frame["source_label"].astype(str).str.startswith("BK")]
+    bk_0_30ms_comparison_frame = pd.concat([non_bk_frame, bk_0_30ms_frame], axis=0)
+    bk_0_30ms_comparison_curve, bk_0_30ms_comparison_summary = estimate_source_feature_stability(
+        bk_0_30ms_comparison_frame,
+        feature_columns,
+        sample_sizes_by_label=bk_0_30ms_sample_sizes_by_label,
+        repeats=cfg.sample_stability_repeats,
+        min_samples=cfg.sample_stability_min_samples,
+        pairwise_threshold=cfg.sample_stability_pairwise_threshold,
+        consecutive_points=cfg.sample_stability_consecutive_points,
+        random_state=cfg.random_state,
+    )
+    bk_0_30ms_stability_curve = bk_0_30ms_comparison_curve.loc[
+        bk_0_30ms_comparison_curve["source_label"].astype(str).str.startswith("BK")
+    ].copy()
+    bk_0_30ms_stability_summary = bk_0_30ms_comparison_summary.loc[
+        bk_0_30ms_comparison_summary["source_label"].astype(str).str.startswith("BK")
+    ].copy()
+    write_csv(bk_0_30ms_selection_audit, output_dir / "bk_0_30ms_selection_audit.csv")
+    write_csv(bk_0_30ms_stability_curve, output_dir / "bk_0_30ms_sample_stability_curve.csv")
+    write_csv(bk_0_30ms_stability_summary, output_dir / "bk_0_30ms_sample_stability_summary.csv")
+    write_csv(bk_0_30ms_comparison_curve, output_dir / "bk_0_30ms_with_nonbk_sample_stability_curve.csv")
+    write_csv(bk_0_30ms_comparison_summary, output_dir / "bk_0_30ms_with_nonbk_sample_stability_summary.csv")
+    plot_source_feature_stability_curves(
+        bk_0_30ms_comparison_curve,
+        output_dir / "plots/bk_0_30ms_with_nonbk_sample_stability_curves.png",
     )
 
     discrimination = evaluate_feature_discrimination(frame, feature_columns, random_state=cfg.random_state)

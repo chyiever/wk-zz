@@ -1281,7 +1281,7 @@
   - `src/pccp_feature_mining/run_all.py`
   - `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb`
   - `docs/2026-9-6-PCCP断丝特征挖掘_Codex开发方案_修正版.md`
-- notebook 第二节末尾新增 `2.7 每个来源类别的特征均值何时趋于稳定`，按 `source_label` 分别估计 `BK00/BK05/FL00/FL05/QJ00/QJ05` 的样本量稳定区间。
+- notebook 第二节末尾新增 `2.7.1 全部派生窗口的来源类别特征均值稳定性`，按 `source_label` 分别估计 `BK00/BK05/FL00/FL05/QJ00/QJ05` 的样本量稳定区间。
 - 新增两种独立估计方式：
   - 相邻样本量均值漂移法：对全局标准化后的候选特征均值向量，计算相邻样本量之间的相对 L2 变化；连续低于 `sample_stability_adjacent_threshold=0.02` 时判为稳定。
   - 双Bootstrap均值一致性法：同一样本量下独立抽取两组 bootstrap 子样本，比较两组标准化特征均值向量的相对 L2 差异 P90；连续低于 `sample_stability_pairwise_threshold=0.05` 时判为稳定。
@@ -1297,4 +1297,35 @@
   - `plots/sample_stability_curves.png`
 - 该分析只回答每个来源类别当前特征均值统计量何时趋于稳定，不参与第 06 节 Bootstrap 特征排名稳定性，也不改变最终特征评分公式。
 - 2026-09-08 修正：旧版“全量均值参照法”在样本量等于当前全量样本数时会与自身比较，导致最大样本量处相对 L2 误差天然接近 0，并可能造成“每类都刚好在现有最大样本量稳定”的假象；已改为双Bootstrap均值一致性法，最大样本量处也使用有放回抽样比较两个独立均值估计，不再强制归零。
+- 2026-09-09 再修正：本节早期版本先对传入的多类别数据拟合全局 `StandardScaler`，再以标准化均值向量的模作为相对 L2 分母。该误差不具平移不变性，加入 FL/QJ 后会改变 BK 所在坐标原点和误差分母，因此同一批 BK 样本的误差可从 1.x 人为降到 0.x。此版本结果已判定为不可跨运行比较，并由后述“类别独立标准化 RMS 误差”替代。
 - notebook 显示工具新增 `sync_output_counters()`，每个产生表/图的代码单元会先把计数器同步到该单元在全 notebook 中的预期位置，避免单独重跑 2.7 时出现“表 8 / 图 1”这类局部编号。
+
+## 2026-09-08（补充）PCCP 2.7.2 BK 单窗口样本稳定性
+
+- 将原 2.7 内容调整为 `2.7.1`，保留六类全部派生窗口分析及原有输出文件，维持向后兼容。
+- 新增 `select_bk_0_30ms_samples()`：
+  - 只选择 `source_label` 为 BK、`window_mode='0_30'`、`window_start_ms≈0`、`window_end_ms≈30` 的特征行。
+  - 以 `event_id` 表示物理断丝事件，保证每个事件最多贡献一行；发现重复目标窗口时直接报错。
+  - 输出每类原派生窗口行数、事件数、入选行数、排除行数、缺失事件数和重复行数审计。
+- 新增 `2.7.2 BK 断丝事件的 0-30 ms 单窗口样本稳定性`，仅对筛选后的 `BK00/BK05` 运行与 2.7.1 相同的稳定性算法。
+- 一键流程新增输出：
+  - `bk_0_30ms_selection_audit.csv`
+  - `bk_0_30ms_sample_stability_curve.csv`
+  - `bk_0_30ms_sample_stability_summary.csv`
+  - `plots/bk_0_30ms_sample_stability_curves.png`
+- 当前真实数据筛选结果：BK00 从 102 个派生窗口筛出 17 个事件，BK05 从 60 个派生窗口筛出 10 个事件；目标窗口缺失数和重复数均为 0。
+- 2026-09-09 加密 2.7.2 样本量网格：不再沿用 5、10、15 等稀疏检查点，而是从 `sample_stability_min_samples=5` 开始以步长 1 检查。当前 BK00 使用 5-17 共 13 个样本量点，BK05 使用 5-10 共 6 个样本量点。
+- 2026-09-09 扩展 2.7.2 图 20：构造“FL/QJ 原始样本 + BK 0-30 ms 单窗口样本”的六类比较数据集。BK 使用逐整数密集网格，FL/QJ 继续使用默认稀疏网格；表 17、表 18 只展示 BK，图 20 展示全部六类，并新增 `bk_0_30ms_with_nonbk_sample_stability_curve.csv` 和 `bk_0_30ms_with_nonbk_sample_stability_summary.csv`。
+- 2.7.2 新增表 16-18、图 20；Notebook03 及后续所有表图编号和 `sync_output_counters()` 基线相应顺延。
+
+## 2026-09-09（修正）六类样本稳定性独立计算
+
+- `estimate_source_feature_stability()` 改为按 `source_label` 完全独立计算：
+  - 每类独立执行数值转换和中位数缺失值插补，避免其他类别的数据分布影响插补值。
+  - 每类独立拟合 `StandardScaler`，仅使用该类的类内标准差统一特征量纲。
+  - 每类使用 `SHA-256(random_state, source_label)` 派生确定性随机种子；增加、删除或重排其他类别不会改变本类的 Bootstrap 抽样序列。
+- 删除依赖全局坐标原点的相对 L2 误差和解释性较弱的相邻平均均值漂移法。新误差定义为两组独立 Bootstrap 均值差的类内标准化 RMS：`sqrt(mean(((mean_a - mean_b) / within_label_std) ** 2))`。
+- 新曲线字段为 `paired_bootstrap_standardized_rms_gap_mean` 和 `paired_bootstrap_standardized_rms_gap_p90`；稳定性只按 P90 连续满足 `sample_stability_pairwise_threshold=0.05` 判定。
+- 删除配置项 `sample_stability_adjacent_threshold`。最大样本量仍进行两组有放回 Bootstrap，因此误差反映当前经验分布下的均值抽样不确定性，不会因使用全量行而强制为 0。
+- 六类曲线的可比范围是“相对于各自类内波动的均值抽样稳定性”；由于每类归一化基准不同，不能将该曲线解释为六类原始信号幅值差异。
+- 已增加不变性校验：同一类别单独输入与加入均值、尺度显著不同的其他类别后，其曲线和汇总结果必须逐字段完全一致。
