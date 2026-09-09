@@ -96,6 +96,19 @@ RIDGE_H2_SEARCH_HZ = (10_000.0, 60_000.0)
 RIDGE_JUMP_PENALTY_HZ = 2_000.0
 RIDGE_RELATIVE_BANDWIDTH = 0.08
 
+# Feature names: rho_r, H2_ratio, epsilon_2x, C_h, rho_up, rho_down.
+# Function family: ridge frame validity gate.
+# Physical meaning: a time frame is "valid" when its main-band energy exceeds this ratio times the
+# window median frame energy; invalid frames are excluded from ridge-continuity statistics.
+# Default: 0.2. Recommended range: 0.05-0.5.
+RIDGE_VALID_ENERGY_RATIO = 0.2
+
+# Feature name: R_h.
+# Function family: fixed-neighborhood ridge band integration.
+# Physical meaning: half-bandwidth (Hz) of the fixed ± band around f1/f2 used to distinguish R_h from
+# the relative-bandwidth R_2_1. Default: 1000 Hz. Recommended range: 500-2000 Hz.
+RIDGE_FIXED_BAND_HZ = 1_000.0
+
 # Feature names: C_bulge, N_bulge.
 # Function family: local bulge counting.
 # Physical meaning: the threshold ratio defines what portion of the envelope is considered the main bulge.
@@ -175,6 +188,8 @@ DEFAULT_FEATURE_PARAMS = FeatureParams(
     ridge_h2_search_hz=RIDGE_H2_SEARCH_HZ,
     ridge_jump_penalty_hz=RIDGE_JUMP_PENALTY_HZ,
     ridge_relative_bandwidth=RIDGE_RELATIVE_BANDWIDTH,
+    ridge_valid_energy_ratio=RIDGE_VALID_ENERGY_RATIO,
+    ridge_fixed_band_hz=RIDGE_FIXED_BAND_HZ,
     bulge_threshold_ratio=BULGE_THRESHOLD_RATIO,
     bulge_min_distance_ms=BULGE_MIN_DISTANCE_MS,
     residual_abnormal_threshold=RESIDUAL_ABNORMAL_THRESHOLD,

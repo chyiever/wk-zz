@@ -51,6 +51,9 @@ class FeatureParams:
     - `ridge_main_search_hz`, `ridge_h2_search_hz`, `ridge_jump_penalty_hz`:
       ridge extraction search region and smoothness controls.
     - `ridge_relative_bandwidth`: harmonic mask relative bandwidth. Default 0.08.
+    - `ridge_valid_energy_ratio`: ridge frame validity gate: valid iff frame band energy >
+      this ratio times the window's median frame energy. Default 0.2.
+    - `ridge_fixed_band_hz`: fixed half-bandwidth (Hz) around ridges for `R_h`. Default 1000.
     - `bulge_threshold_ratio`, `bulge_min_distance_ms`: bulge counting parameters.
     - `residual_abnormal_threshold`: threshold for abnormal frame counting.
     - `local_window_ms`, `asymmetry_window_ms`: local statistics window controls.
@@ -80,6 +83,8 @@ class FeatureParams:
     ridge_h2_search_hz: tuple[float, float] = (10_000.0, 60_000.0)
     ridge_jump_penalty_hz: float = 2_000.0
     ridge_relative_bandwidth: float = 0.08
+    ridge_valid_energy_ratio: float = 0.2
+    ridge_fixed_band_hz: float = 1_000.0
     bulge_threshold_ratio: float = 0.6
     bulge_min_distance_ms: float = 0.2
     residual_abnormal_threshold: float = 0.55

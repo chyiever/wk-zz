@@ -217,7 +217,7 @@ $$
 | 13 | 谱质心衰减斜率 | $k_{sc}$ | 时频演化 | 高频向低频迁移速度 | `k_sc` | $SC(t)\approx k_{sc}t+b_{sc}$ |
 | 14 | 高频低频能量比 | $R_{hl}(t)$ | 能量/时频 | 高频占比 | `R_hl_mean` | $R_{hl}(t)=\dfrac{E_{\text{high}}(t)}{E_{\text{low}}(t)+\varepsilon}$ |
 | 15 | 高频低频能量比斜率 | $k_{hl}$ | 能量/时频 | 高频衰减速度 | `k_hl` | $R_{hl}(t)\approx k_{hl}t+b_{hl}$ |
-| 16 | 高频衰减斜率 | $\beta_H$ | 能量/时频 | 峰后高频衰减 | `beta_H` | $\log(E_H(t)+\varepsilon)\approx \beta_H t+b_H$ |
+| 16 | 高频衰减斜率 | $\beta_H$ | 能量/时频 | 峰后高频衰减（峰后窗拟合） | `beta_H` | $\log(E_H(t)+\varepsilon)\approx \beta_H t+b_H,\ t\in[t_p,t_{off}]$ |
 | 17 | 时频熵 | $H_{tf}$ | 时频演化 | 能量分散度 | `H_tf` | $H_{tf}=-\sum p_{ij}\ln p_{ij}$ |
 | 18 | 频谱平坦度 | $SF$ | 频域 | 谱平坦/尖峰程度 | `SF` | $SF=\dfrac{\exp(\frac1K\sum \ln P_k)}{\frac1K\sum P_k}$ |
 | 19 | Renyi 熵 | $H_\alpha$ | 时频演化 | 集中度/复杂度 | `H_alpha` | $H_\alpha=\dfrac{1}{1-\alpha}\log\sum p_{tf}^{\alpha}$ |
@@ -227,17 +227,17 @@ $$
 | 23 | 拱形轨迹分数 | $S_{\text{arch}}$ | 谐波/脊线 | 先升后降拱形趋势 | `S_arch` | $S_{\text{arch}}=R^2(f_1,q)\mathbf1(a<0)\mathbf1(t_v\in[0.2T,0.8T])$ |
 | 24 | 二倍频存在度 | $H2_{\text{ratio}}$ | 二倍频/谐波 | 2:1 关系出现频率 | `H2_ratio` | $H2_{\text{ratio}}=\dfrac{N\{\lvert f_2-2f_1\rvert<\Delta f\}}{N_{\text{active}}}$ |
 | 25 | 二倍频比 | $R_{2:1}$ | 二倍频/谐波 | 二倍频能量强度 | `R_2_1` | $R_{2:1}=\dfrac{\sum_t E(t,2f_1\pm\Delta f)}{\sum_t E(t,f_1\pm\Delta f)+\varepsilon}$ |
-| 26 | 谐波栈能量比 | $H_{\text{stack}}$ | 二倍频/谐波 | 多谐波组织程度 | `H_stack` | $H_{\text{stack}}=\dfrac{\sum_t\sum_{m=1}^M E(t,mf_1\pm\Delta f)}{\sum_{t,f}S(t,f)}$ |
-| 27 | 谐波能量比 | $R_h$ | 二倍频/谐波 | 二倍频/基频强度比 | `R_h` | $R_h=\dfrac{E_{2nd}}{E_{1st}}$ |
+| 26 | 谐波栈能量比 | $H_{\text{stack}}$ | 二倍频/谐波 | 多谐波组织程度 | `H_stack` | $H_{\text{stack}}=\dfrac{\sum_t\sum_{m=1}^M E(t,mf_1\pm\Delta f)}{\sum_{t,f}P(t,f)}$ |
+| 27 | 谐波能量比 | $R_h$ | 二倍频/谐波 | 二倍频/基频强度比（±1 kHz 固定邻域，与 `R_2_1` 的 ±0.08f₁ 相对带宽互补） | `R_h` | $R_h=\dfrac{E_{2nd,\pm1\text{kHz}}}{E_{1st,\pm1\text{kHz}}}$ |
 | 28 | 二倍频一致性误差 | $\varepsilon_{2\times}$ | 二倍频/谐波 | 偏离 2:1 程度 | `epsilon_2x` | $\varepsilon_{2\times}=\mathrm{median}\!\left(\dfrac{\lvert f_2-2f_1\rvert}{f_1}\right)$ |
 | 29 | 谐波一致性误差 | $C_h$ | 二倍频/谐波 | 二倍频跟随误差 | `C_h` | $C_h=\mathrm{mean}(\lvert f_2-2f_1\rvert)$ |
 | 30 | 谐波能量占比 | $R_{\text{harm}}$ | 二倍频/谐波 | 主谐波可解释占比 | `R_harm` | $R_{\text{harm}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ |
-| 31 | 脊线连续性 | $Ridge_{\text{coh}}$ | 二倍频/谐波 | 谐波掩膜内能量占比 | `Ridge_coh` | $Ridge_{\text{coh}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ |
+| 31 | 谐波能量占比（`R_harm` 别名，已停用） | $Ridge_{\text{coh}}$ | 二倍频/谐波 | 谐波掩膜内能量占比 | `Ridge_coh` | $Ridge_{\text{coh}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ |
 | 32 | 上升帧占比 | $\rho_{up}$ | 脊线演化 | 上升段占比 | `rho_up` | $\rho_{up}=\dfrac{N\{df_1/dt>\tau_s\}}{N_{\text{active}}}$ |
 | 33 | 下降帧占比 | $\rho_{down}$ | 脊线演化 | 下降段占比 | `rho_down` | $\rho_{down}=\dfrac{N\{df_1/dt<-\tau_s\}}{N_{\text{active}}}$ |
 | 34 | 转折次数 | $N_{\text{turn}}$ | 脊线演化 | 拐点/多鼓包复杂度 | `N_turn` | $N_{\text{turn}}=N\{\mathrm{sign}(df_1/dt)\text{变化}\}$ |
 | 35 | 频率跨度 | $\Delta f_{\text{span}}$ | 脊线演化 | 基频摆动范围 | `Delta_f_span` | $\Delta f_{\text{span}}=\max(f_1)-\min(f_1)$ |
-| 36 | 归一化曲率 | $C_f$ | 脊线演化 | 弯曲程度 | `C_f` | $C_f=\mathrm{mean}\!\left(\left\lvert\dfrac{d^2f_1}{dt^2}\right\rvert\right)$ |
+| 36 | 归一化曲率 | $C_f$ | 脊线演化 | 弯曲程度（相对归一） | `C_f` | $C_f=\dfrac{\mathrm{mean}\!\left(\left\lvert\dfrac{d^2f_1}{dt^2}\right\rvert\right)}{\mathrm{mean}\lvert f_1\rvert}$ |
 | 37 | 谐波可解释能量 | $E_{\text{harm}}$ | 残差/背景扣除 | 可由流噪声解释的能量 | `E_harm` | $E_{\text{harm}}=\sum M_hP$ |
 | 38 | 残差能量 | $E_{\text{res}}$ | 残差/背景扣除 | 未解释异常能量 | `E_res` | $E_{\text{res}}=E_{\text{total}}-E_{\text{harm}}$ |
 | 39 | 非谐波残差占比 | $\rho_{\text{res}}$ | 残差/背景扣除 | 异常残差占比 | `rho_res` | $\rho_{\text{res}}=\dfrac{E_{\text{res}}}{E_{\text{total}}}$ |
@@ -247,7 +247,7 @@ $$
 | 43 | 谱流量峰值 | $F_{\text{peak}}$ | 瞬态/冲击 | 帧间突变强度 | `F_peak` | $F_{\text{peak}}=\max_i \sum_j [P(i,j)-P(i-1,j)]_+$ |
 | 44 | TKEO 峰值比 | $R_{\text{tkeo}}$ | 瞬态/冲击 | 局部尖锐度 | `R_tkeo` | $R_{\text{tkeo}}=\dfrac{\max(\Psi[n])}{\mathrm{mean}(\Psi[n])}$ |
 | 45 | 残差 TKEO 峰值比 | $R_{\text{res,tkeo}}$ | 瞬态/冲击 | 残差尖锐瞬态 | `R_res_tkeo` | $R_{\text{res,tkeo}}=\dfrac{\max(\Psi_{\text{res}}[n])}{\mathrm{mean}(\Psi_{\text{res}}[n])}$ |
-| 46 | 局部峭度 | $K_{\text{loc}}$ | 瞬态/冲击 | 冲击尖峰 | `K_loc` | $K_{\text{loc}}=\dfrac{\frac1N\sum(x-\mu)^4}{\sigma^4}$ |
+| 46 | 全局峭度 | $K_{\text{loc}}$ | 瞬态/冲击 | 整窗幅值分布尖峰 | `K_loc` | $K_{\text{loc}}=\dfrac{\frac1N\sum(x-\mu)^4}{\sigma^4}$ |
 | 47 | 残差局部峭度最大值 | $K_{\text{res,max}}$ | 瞬态/冲击 | 残差尖峰极值 | `K_res_max` | $K_{\text{res,max}}=\max_m K_{\text{res}}^{(m)}$ |
 | 48 | 谱峭度峰值 | $SK_{\max}$ | 瞬态/冲击 | 瞬态频带定位 | `SK_max` | $SK_{\max}=\max_k \hat{SK}(k)$ |
 | 49 | 峰均比 | $CF_{\text{res}}$ | 瞬态/冲击 | 尖峰/均方强度 | `CF_res` | $CF_{\text{res}}=\dfrac{\max\lvert x_{\text{res}}\rvert}{\mathrm{RMS}(x_{\text{res}})}$ |
@@ -260,13 +260,13 @@ $$
 | 56 | 残差前后不对称度 | $\eta_{\text{asym}}$ | 残差演化 | 触发后能量偏置 | `eta_asym` | $\eta_{\text{asym}}=\dfrac{E[t_0,t_0+\tau]}{E[t_0-\tau,t_0]}$ |
 | 57 | 小波包节点能量比 | $R_{\text{wp},i}$ | 小波/多分辨率 | 多尺度能量分布 | `R_wp_*` | $R_{\text{wp},i}=\dfrac{E_{\text{wp},i}}{\sum_j E_{\text{wp},j}}$ |
 | 58 | 小波熵 | $H_{\text{wp}}$ | 小波/多分辨率 | 子带分散度 | `H_wp` | $H_{\text{wp}}=-\sum_i p_i\ln p_i$ |
-| 59 | 高频子带能量突发指数 | $I_{\text{burst}}$ | 小波/多分辨率 | 高频突发性 | `I_burst` | $I_{\text{burst}}=\dfrac{\max(E_{\text{wp}}(t))}{\mathrm{median}(E_{\text{wp}}(t))}$ |
-| 60 | 高频-低频能差 | $D_{\text{WPT}}$ | 小波/多分辨率 | 高频异常偏置 | `D_WPT` | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in Harm}p_i$ |
+| 59 | 小波包子带能量集中度 | $I_{\text{burst}}$ | 小波/多分辨率 | 能量在子带间的集中度 | `I_burst` | $I_{\text{burst}}=\dfrac{\max(E_{\text{wp}})}{\mathrm{median}(E_{\text{wp}})}$ |
+| 60 | 高频-低频能差 | $D_{\text{WPT}}$ | 小波/多分辨率 | 高频异常偏置 | `D_WPT` | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in LF}p_i$ |
 | 61 | 阻尼原子最大匹配度 | $C_{\text{damp}}$ | 阻尼模型 | 阻尼振荡证据强度 | `C_damp` | $C_{\text{damp}}=\dfrac{\max_\theta \lvert\langle r,g_\theta\rangle\rvert}{\lVert r\rVert\,\lVert g_\theta\rVert}$ |
 | 62 | 残差衰减常数 | $\hat\alpha$ | 阻尼模型 | 指数衰减速度 | `alpha_hat` | $\log e_{\text{res}}(t)\approx -\hat\alpha t+b$ |
-| 63 | 矩阵铅笔拟合优度 | $Q_{\text{MP}}$ | 阻尼模型 | 阻尼正弦解释能力 | `Q_MP` | 阻尼拟合误差下降率 |
+| 63 | Hankel 低秩重建质量 | $Q_{\text{MP}}$ | 阻尼模型 | 残差能否用单个阻尼振荡解释 | `Q_MP` | 残差 Hankel 矩阵秩 2 SVD 重建质量（非矩阵铅笔法） |
 | 64 | 加入损伤原子后的误差下降率 | $\Delta J$ | 模型竞争 | 新增损伤分量的解释增益 | `Delta_J` | $\Delta J=\dfrac{\lVert x-\hat x_f\rVert_2^2-\lVert x-\hat x_f-\hat x_d\rVert_2^2}{\lVert x\rVert_2^2}$ |
-| 65 | 字典损伤系数比 | $\eta_{\text{dict}}$ | 稀疏表示 | 损伤字典占比 | `eta_dict` | $\eta_{\text{dict}}=\dfrac{\lVert\alpha_d\rVert_1}{\lVert\alpha_f\rVert_1+\lVert\alpha_d\rVert_1}$ |
+| 65 | 损伤分量波形占比 | $\eta_{\text{dict}}$ | 稀疏表示 | 损伤分量波形占主导程度（波形 L1 口径） | `eta_dict` | $\eta_{\text{dict}}=\dfrac{\lVert x_d\rVert_1}{\lVert x_f\rVert_1+\lVert x_d\rVert_1}$ |
 
 ---
 
@@ -381,16 +381,18 @@ $$
 - 名称：前后能量比
 - 符号：$R_{fb}$
 - 物理意义：峰前/峰后能量不均衡。
-- 计算公式：
+- 计算公式（**事件窗口径**：以事件边界为界，避免计入事件外背景噪声）：
 
 $$
 R_{fb}=\frac{E_{\text{before}}}{E_{\text{after}}}
 $$
 
 $$
-E_{\text{before}}=\sum_{n=0}^{n_p} e[n]^2\Delta t,\qquad
-E_{\text{after}}=\sum_{n=n_p}^{N-1} e[n]^2\Delta t
+E_{\text{before}}=\sum_{n=n_{on}}^{n_p} e[n]^2\Delta t,\qquad
+E_{\text{after}}=\sum_{n=n_p+1}^{n_{off}} e[n]^2\Delta t
 $$
+
+（峰值样本 $n_p$ 计入前段一次，避免重叠计入。）
 
 - 建议频带：5–60 kHz
 
@@ -496,13 +498,14 @@ $$
 - 名称：高频衰减斜率
 - 符号：$\beta_H$
 - 物理意义：峰后高频能量下降的快慢。
-- 计算公式：
+- 计算公式（峰后窗拟合，$t\in[t_p,t_{off}]$，避免上升段污染衰减斜率）：
 
 $$
 \log(E_H(t)+\varepsilon)\approx \beta_H t+b_H
 $$
 
 - 来源公式：$E_H(t)=\sum_{f\in B_H}S(t,f)$。
+- 实现口径：先取峰值时刻 $t_p$ 之后、事件终点 $t_{off}$ 之前的 STFT 帧做对数线性拟合。
 - 建议频带：
   - 主推荐：30–60 kHz
   - 可替代：25–45 kHz、25–60 kHz
@@ -598,7 +601,7 @@ $$
 \rho_r=\frac{L_{\text{valid}}}{L_{\text{all}}}
 $$
 
-- 来源量：$L_{\text{valid}}$ 为成功跟踪到主脊线的帧数。
+- 来源量：$L_{\text{valid}}$ 为成功跟踪到主脊线的帧数。实现中有效帧判据：主带帧能量 $>0.2\times$ 全窗帧能量中位数 且 脊线频率 $>0$；无效帧不参与统计（避免 DP 脊线“只要有数据必返回正频率”导致的 $\rho_r\equiv1$ 退化）。
 - 建议频带：
   - 主脊线搜索：5–30 kHz
   - 谱图主分析带：5–60 kHz
@@ -608,6 +611,7 @@ $$
 - 名称：脊线缺口率
 - 符号：$G_{\text{gap}}$
 - 物理意义：主结构是否被异常打断。
+- 实现口径：间隙 = 脊线丢失帧，或有效脊线相邻帧跳变 $>2$ 倍频率分辨率；分母为总帧数 $L_{\text{all}}$。
 - 计算公式：
 
 $$
@@ -679,11 +683,11 @@ $$
 - 名称：谐波栈能量比
 - 符号：$H_{\text{stack}}$
 - 物理意义：主频及其多阶谐波的整体组织程度。
-- 计算公式：
+- 计算公式（$mf_1\pm\Delta f$ 带内积分，$\Delta f=\max(2\text{bin},0.08f_1)$）：
 
 $$
 H_{\text{stack}}=
-\frac{\sum_t\sum_{m=1}^M E(t,mf_1(t)\pm\Delta f)}{\sum_{t,f}S(t,f)}
+\frac{\sum_t\sum_{m=1}^M E(t,mf_1(t)\pm\Delta f)}{\sum_{t,f}P(t,f)}
 $$
 
 - 建议频带：5–60 kHz；一般 $M=2$ 或 3。
@@ -693,13 +697,13 @@ $$
 - 名称：谐波能量比
 - 符号：$R_h$
 - 物理意义：二倍频与基频能量比。
-- 计算公式：
+- 计算公式（**固定 ±1 kHz 邻域**带积分；与 `R_2_1` 的 ±0.08f₁ 相对带宽口径互补）：
 
 $$
 R_h=\frac{E_{2nd}}{E_{1st}}
 $$
 
-- 来源量：$E_{1st}$、$E_{2nd}$ 为各自邻域积分能量。
+- 来源量：$E_{1st}=\sum_t\sum_{f\in f_1(t)\pm1\text{kHz}}P(t,f)$、$E_{2nd}=\sum_t\sum_{f\in f_2(t)\pm1\text{kHz}}P(t,f)$，超出 STFT 频率轴范围的帧跳过。
 - 建议频带：
   - 基频邻域：$f_1\pm 1$ kHz
   - 二倍频邻域：$f_2\pm 1$ kHz
@@ -762,6 +766,7 @@ $$
 N_{\text{turn}}=N\{\mathrm{sign}(df_1/dt)\text{发生变化}\}
 $$
 
+- 实现口径：只统计有效帧（同 $\rho_r$ 判据）的相邻斜率；`N_turn` 先剔除零斜率样本再统计 $\mathrm{sign}$ 变化，避免 `+→0→−` 计为两次转折。
 - 建议频带：5–30 kHz 主脊线。
 
 ### 5.4.12 频率跨度 $\Delta f_{\text{span}}$ 与归一化曲率 $C_f$
@@ -776,9 +781,10 @@ $$
 $$
 
 $$
-C_f=\mathrm{mean}\left(\left|\frac{d^2f_1}{dt^2}\right|\right)
+C_f=\frac{\mathrm{mean}\left(\left|\frac{d^2f_1}{dt^2}\right|\right)}{\mathrm{mean}|f_1|}
 $$
 
+（除以平均主频的**相对曲率**归一化，跨频带可比；仅统计有效帧。）
 - 建议频带：5–30 kHz 主脊线。
 
 ---
@@ -893,6 +899,7 @@ $$
 F_{\text{peak}}=\max_i Flux(t_i)
 $$
 
+- 实现口径：对每个频点先取正增量（半波整流）再求和，避免"低频降、高频升"互相抵消；首帧通量置 0。
 - 建议频带：5–60 kHz；也可专用于残差谱。
 
 ### 5.6.2 TKEO 峰值比 $R_{\text{tkeo}}$
@@ -919,11 +926,11 @@ $$
 - 计算公式：与 $R_{\text{tkeo}}$ 相同，但输入换为 $x_{\text{res}}[n]$。
 - 建议频带：残差重构后时域波形；辅以 20–60 kHz 残差带。
 
-### 5.6.4 局部峭度 $K_{\text{loc}}$ / 残差局部峭度最大值 $K_{\text{res,max}}$
+### 5.6.4 全局峭度 $K_{\text{loc}}$ / 残差局部峭度最大值 $K_{\text{res,max}}$
 
-- 名称：局部峭度、残差局部峭度最大值
+- 名称：全局峭度（整窗）、残差局部峭度最大值
 - 符号：$K_{\text{loc}}$、$K_{\text{res,max}}$
-- 物理意义：尖峰性、冲击性。
+- 物理意义：整窗幅值分布的尖峰性（`K_loc` 公式为整窗四阶矩，属**全局**统计；"局部"统计见 `K_res_max`）。
 - 计算公式：
 
 $$
@@ -931,8 +938,8 @@ K=\frac{\frac1N\sum(x-\mu)^4}{\sigma^4}
 $$
 
 - 建议频带：
-  - 局部峭度：5–60 kHz 或高频子带
-  - 残差局部峭度：20–60 kHz 残差带优先
+  - 全局峭度（`K_loc`）：5–60 kHz 或高频子带
+  - 残差局部峭度（`K_res_max`）：20–60 kHz 残差带优先
 
 ### 5.6.5 谱峭度峰值 $SK_{\max}$
 
@@ -952,6 +959,7 @@ $$
 - 建议频带：
   - 主推荐：全带 5–60 kHz
   - 更聚焦异常：20–60 kHz
+- 实现口径：已按上式经典估计器（Antoni 四阶累积量，高斯过程→0）实现，输入为短窗 STFT 功率谱。
 
 ### 5.6.6 峰均比 $CF_{\text{res}}$
 
@@ -970,8 +978,8 @@ $$
 
 - 名称：高频半衰期
 - 符号：$T_{\text{half,high}}$
-- 物理意义：高频成分衰减到一半所需时间。
-- 计算方法：对 $x_{H1}[n]$ 包络求峰后首次跌至 $50\%$ 峰值时刻。
+- 物理意义：高频成分从峰值衰减到一半所需时间（衰减时长，跨窗口径可比）。
+- 计算方法：对 $x_{H2}[n]$（20–60 kHz 高频带）包络，求**峰值时刻到峰后首次跌至 $50\%$ 峰值**的时长 $T_{\text{half,high}}=t(e_H=0.5e_{H,\max})-t_{\text{peak}}$；峰后从未跌破 50% 时返回 `NaN`。
 - 建议频带：
   - 主推荐：20–40 kHz
   - 若需要更高频：25–60 kHz
@@ -1071,33 +1079,31 @@ $$
 
 - 建议频带：对主分析带或残差做 WPT。
 
-### 5.8.3 高频子带能量突发指数 $I_{\text{burst}}$
+### 5.8.3 小波包子带能量集中度 $I_{\text{burst}}$
 
-- 名称：高频子带能量突发指数
+- 名称：小波包子带能量集中度
 - 符号：$I_{\text{burst}}$
-- 物理意义：高频短时突发程度。
+- 物理意义：能量在**子带间**的集中程度（跨子带 max/median），与时间域"突发性"无关；与子带熵 $H_{\text{wp}}$ 互补。
 - 计算公式：
 
 $$
-I_{\text{burst}}=\frac{\max(E_{\text{wp}}(t))}{\mathrm{median}(E_{\text{wp}}(t))}
+I_{\text{burst}}=\frac{\max_i E_{\text{wp},i}}{\mathrm{median}_i E_{\text{wp},i}}
 $$
 
-- 建议频带：高频小波包节点优先。
+- 建议频带：对全部小波包子带节点计算集中度。
 
 ### 5.8.4 高频-低频能差 $D_{\text{WPT}}$
 
 - 名称：高频-低频能差
 - 符号：$D_{\text{WPT}}$
-- 物理意义：能量是否从谐波相关子带偏向高频异常子带。
+- 物理意义：能量是否偏向高频异常子带。
 - 计算公式：
 
 $$
-D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in Harm}p_i
+D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in LF}p_i
 $$
 
-- 建议频带：
-  - 高频节点集合：对应 20–60 kHz
-  - 谐波节点集合：对应主频/二倍频附近
+- 节点集合定义：HF/LF 按**子带中心频率 > 主带几何中点 $\sqrt{f_{\text{lo}}f_{\text{hi}}}$** 划分（不再按节点序对半分，也不减谐波带，与 `R_harm`/`H_stack` 正交）。
 
 ---
 
@@ -1131,14 +1137,15 @@ $$
 $$
 
 - 来源量：$e_{\text{res}}(t)$ 为残差包络。
+- 实现口径：对**峰后衰减段** $t\in[t_p,t_{off}]$ 的残差包络对数做线性拟合（避免上升段污染），$\hat\alpha=-\text{slope}$。
 - 建议时间窗：触发后 0.3–1.5 ms。
 
-### 5.9.3 矩阵铅笔拟合优度 $Q_{\text{MP}}$
+### 5.9.3 Hankel 低秩重建质量 $Q_{\text{MP}}$
 
-- 名称：矩阵铅笔拟合优度
-- 符号：$Q_{\text{MP}}$
-- 物理意义：指数阻尼正弦模型对残差的解释程度。
-- 计算方式：矩阵铅笔法拟合前后误差下降率。
+- 名称：Hankel 低秩重建质量
+- 符号：$Q_{\text{MP}}$（变量名保留）
+- 物理意义：残差能否用单个阻尼振荡解释。
+- 计算方式：对残差构造 Hankel 矩阵，做秩 2 SVD 最优近似的重建质量（**非矩阵铅笔法**，无需估计极点）。
 - 建议频带：候选残差窗；优先在高置信候选上运行。
 
 ---
@@ -1161,22 +1168,21 @@ $$
   - $\hat x_d$：阻尼原子、小字典或稀疏求解得到的损伤分量
 - 建议频带：5–60 kHz，必要时局部候选窗。
 
-### 5.10.2 字典损伤系数比 $\eta_{\text{dict}}$
+### 5.10.2 损伤分量波形占比 $\eta_{\text{dict}}$
 
-- 名称：字典损伤系数比
-- 符号：$\eta_{\text{dict}}$
-- 物理意义：稀疏分解中更像“损伤字典”还是“流噪声字典”。
-- 计算公式：
+- 名称：损伤分量波形占比
+- 符号：$\eta_{\text{dict}}$（变量名保留）
+- 物理意义：损伤分量在"谐波重构 + 损伤分量"中占主导的程度。
+- 计算公式（实现为**波形 L1 范数占比**，非稀疏字典系数比）：
 
 $$
-\eta_{\text{dict}}=\frac{\|\alpha_d\|_1}{\|\alpha_f\|_1+\|\alpha_d\|_1}
+\eta_{\text{dict}}=\frac{\|x_d\|_1}{\|x_f\|_1+\|x_d\|_1}
 $$
 
 - 来源量：
-  - $D_f$：流噪声字典
-  - $D_d$：损伤字典
-  - $\alpha_f,\alpha_d$：OMP/MP/K-SVD 系数
-- 建议频带：5–60 kHz；候选窗优先。
+  - $x_f$：谐波掩膜重构信号（流噪声主结构）
+  - $x_d$：最佳阻尼原子 $\times$ 其在残差上的投影（损伤分量）
+- 实现说明：当前未做字典学习/OMP 稀疏分解，$\eta_{\text{dict}}$ 为波形口径的近似替代；若后续引入真稀疏字典（$D_f$/$D_d$、系数 $\alpha_f$/$\alpha_d$），可再切换为稀疏系数 L1 比。
 
 ---
 
@@ -1274,3 +1280,30 @@ $$
 - 若设备高频响应不足，应优先保留“结构类特征”而弱化“绝对高频能量类特征”。
 - 若前端存在削顶或 AGC，应弱化 $K_{\text{loc}}$、$CF_{\text{res}}$、峰值类指标，强化 $\rho_r$、$R_{2:1}$、$\varepsilon_{2\times}$、$S_{\text{arch}}$、$\Delta J$。
 - 若后续要编码，建议先将本文第 2 节“基础量”单独实现成公共函数，再派生全部特征。
+
+---
+
+## 10. 修订记录
+
+> 以下修改依据 `docs/特征一致性核对报告.md`（2026-09-07 核对）执行，与代码基线 `fea_cpt_gpu_v2_2` 对齐；代码修改见 `src/fea_cpt_gpu_v2_2/features.py`。
+
+| 日期 | 位置 | 修改内容 | 原（修改前） | 现（修改后） |
+|---|---|---|---|---|
+| 2026-09-10 | #7 `R_fb`（§5.1.7） | 边界口径 | $E_{\text{before}}=\sum_{0}^{n_p}$、$E_{\text{after}}=\sum_{n_p}^{N-1}$（整窗） | $E_{\text{before}}=\sum_{n_{on}}^{n_p}$、$E_{\text{after}}=\sum_{n_p+1}^{n_{off}}$（事件窗，峰值样本只计入一次） |
+| 2026-09-10 | #11 `eta_bw` | 名称统一 | 汇总名“包络左右宽度比”，与字典“有效带宽比”不一致 | 保留“包络左右宽度比”；字典已同步改名 |
+| 2026-09-10 | #16 `beta_H`（§5.2.3） | 拟合区间 | 全窗对数拟合（未指明区间） | 峰后窗拟合 $t\in[t_p,t_{off}]$ |
+| 2026-09-10 | #20 `rho_r`（§5.4.1） | 有效性判据 | $L_{\text{valid}}$ 未定义，代码恒为全帧 → $\rho_r\equiv1$ | 有效帧判据：主带帧能量 $>0.2\times$ 帧能量中位数且脊线 $>0$ |
+| 2026-09-10 | #21 `G_gap`（§5.4.2） | 判据 | 未定义 $N_{\text{gap}}$；代码退化为“卡同一频点（$\lvert\Delta f_1\rvert<10^{-12}$）” | 间隙 = 脊线丢失帧 或 有效脊线跳变 $>2$ 倍频率分辨率 |
+| 2026-09-10 | #26 `H_stack`（§5.4.7） | 分母符号 | $\sum_{t,f}S(t,f)$（$S(t,f)$ 未定义，笔误） | $\sum_{t,f}P(t,f)$；并注明 $\Delta f$ 带内积分 |
+| 2026-09-10 | #27 `R_h`（§5.4.8） | 口径 | 与 `R_2_1` 不可区分（同公式） | $f_1/f_2$ 固定 $\pm1$ kHz 邻域带积分，与 `R_2_1`（±0.08f₁）互补 |
+| 2026-09-10 | #31 `Ridge_coh` | 别名标注 | “脊线连续性”，与 `R_harm` 同值未注明 | 标注为 `R_harm` 同值别名，**已停用** |
+| 2026-09-10 | #34 `N_turn`（§5.4.11） | 计数 | 含零斜率段（`+→0→−` 计 2 次） | 剔除零斜率样本后再计 $\mathrm{sign}$ 变化次数 |
+| 2026-09-10 | #36 `C_f`（§5.4.12） | 归一化 | 公式未归一化，名称却叫“归一化曲率” | 公式补除以 $\mathrm{mean}\lvert f_1\rvert$（相对曲率，跨频带可比） |
+| 2026-09-10 | #46 `K_loc`（§5.6.4） | 名称 | “局部峭度”（公式是整窗四阶矩，名不副实） | “全局峭度”（整窗）；“局部”统计由 `K_res_max` 承担 |
+| 2026-09-10 | #48 `SK_max`（§5.6.5） | 实现对齐 | 汇总公式已是经典估计器，但代码未按此实现 | 代码已改为 $\langle\lvert X\rvert^4\rangle/\langle\lvert X\rvert^2\rangle^2-2$ |
+| 2026-09-10 | #50 `T_half_high`（§5.6.7） | 口径/说明 | “峰后首次跌至 50% 峰值时刻”（未明确减峰值时刻） | 明确为**峰值到峰后首次跌破 50% 的时长**；未跌破时返回 `NaN` |
+| 2026-09-10 | #59 `I_burst`（§5.8.3） | 名称/含义 | “高频子带能量突发指数”（时间域突发） | “小波包子带能量集中度”（跨子带集中度） |
+| 2026-09-10 | #60 `D_WPT`（§5.8.4） | 公式 | $\sum_{i\in HF}p_i-\sum_{i\in Harm}p_i$（与名称矛盾） | $\sum_{i\in HF}p_i-\sum_{i\in LF}p_i$，HF/LF 按子带中心频率 > 主带几何中点划分 |
+| 2026-09-10 | #62 `alpha_hat`（§5.9.2） | 拟合区间 | 全窗对数包络拟合 | 峰后衰减段 $t\in[t_p,t_{off}]$ 拟合 |
+| 2026-09-10 | #63 `Q_MP`（§5.9.3） | 名称/描述 | “矩阵铅笔拟合优度 / 矩阵铅笔法误差下降率” | “Hankel 低秩重建质量”（秩 2 SVD 重建质量，非矩阵铅笔法） |
+| 2026-09-10 | #65 `eta_dict`（§5.10.2） | 名称/公式 | “字典损伤系数比”，稀疏系数 L1 比（未实现稀疏分解） | “损伤分量波形占比”，波形 L1 比（谐波重构 vs 损伤分量） |
