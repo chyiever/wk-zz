@@ -1375,6 +1375,14 @@
 - 最终样本量的高 RSE 主要集中在 `mean/Q10/Q50/Q90`；所有类别的 `std` 均没有超过 100%。典型原因一是均值或分位数接近零，使相对误差分母很小；二是 `k_hl`、`k_sc`、`k_res_hl`、`k_res_sc` 等比值/残差型特征存在重尾或分母敏感性，使 Bootstrap SE 剧增。
 - 对 RSE 大于 100% 的项，应回查 `bootstrap_estimate`、`bootstrap_se`、`denominator_was_floored` 和原始分布；中心量接近零时改用绝对 SE、Bootstrap 置信区间或按业务量程归一化的误差，重尾比值型特征则应检查分母保护、异常值与稳健变换。
 
+## 2026-09-10（再补充）2.7.1 稀疏可调网格与 RSE 分图
+
+- 2.7.1 不再把 median 与 P90 画在同一张图：图 19 单独展示 P90 RSE，保留 10% 判稳参考线；新增图 20 单独展示 median RSE，不画 P90 判稳线。两张图均保留 mean/std/Q10/Q50/Q90 与总体汇总六个面板。
+- `plot_bootstrap_rse_curves()` 新增 `summary_column` 参数，只接受 `p90_rse` 或 `median_rse`，确保一张图只表达一种跨特征汇总口径。
+- Notebook 2.7.1 暴露三个可手调网格参数：`RSE_GRID_DENSE_UNTIL=10`、`RSE_GRID_GROWTH=1.7`、`RSE_GRID_MAX_POINTS=18`。六个来源类别统一调用 `build_sample_size_grid()`；默认网格较原来的 20、1.3、32 更稀疏，以减少 Bootstrap 次数，并始终保留每类全量样本点。
+- 调大 `RSE_GRID_GROWTH` 或调小 `RSE_GRID_MAX_POINTS` 可进一步提速；需要精细定位阈值交点时可反向调整。网格越稀疏，“连续两个点满足阈值”的实际样本量跨度越大，因此判稳结果应结合曲线检查。
+- Notebook 正文保留并补强 RSE 大于 100% 的解释：这表示 Bootstrap SE 大于估计量绝对值，不是概率超过 100%；主要检查近零中心量、重尾/异常值、比值型特征原始分母，并结合绝对 SE 和 Bootstrap 区间判断。
+
 ## 2026-09-10（特征一致性核对落地）：修订特征计算公式并同步文档
 
 - 本次更新范围：`src/fea_cpt_gpu_v2_2/features.py`、`src/fea_cpt_gpu_v2_2/base.py`、`src/fea_cpt_gpu_v2_2/params.py`、`src/pccp_feature_mining/feature_schema.py`、`notebooks/DATA09_v0-flow_feature_extraction.ipynb`、`notebooks/DATA09_v0-qj_sample_label_normalization.ipynb`、`docs/PCCP特征字典.md`、`docs/chatgpt-特征汇总.md`、`docs/dev.md`、`.gitignore`。

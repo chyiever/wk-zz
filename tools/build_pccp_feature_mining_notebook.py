@@ -217,6 +217,7 @@ show_table('读取异常与低有效特征行审计', load_issues)
         code(
             """
 from pccp_feature_mining.distribution_analysis import (
+    build_sample_size_grid,
     estimate_bootstrap_statistic_stability,
     estimate_feature_distribution_mmd,
     plot_bootstrap_rse_curves,
@@ -269,7 +270,9 @@ if not umap_projection.empty:
 
 BK 每个物理事件仅保留 0-30 ms 窗口，FL/QJ 使用原始样本。对每个来源类别和样本量重复 Bootstrap；每个特征计算 mean、std、Q10、Q50、Q90，再以 `RSE = Bootstrap标准误 / |Bootstrap估计均值|` 计算相对标准误。汇总全部“特征 × 统计量”的 median RSE、P90 RSE 与最大 RSE；默认 P90 RSE 连续两个点不高于 10% 时判定稳定。
 
-图 19 分成六个面板：mean、std、Q10、Q50、Q90 各一个面板，最后一个面板汇总全部“特征 × 五种统计量”。每个面板同时绘制 median RSE（虚线，代表典型特征）和 P90 RSE（实线圆点，代表 90% 特征覆盖）；来源类别由颜色区分。纵轴是无量纲相对抽样不确定性，不是特征幅值或能量。mean 表示中心水平稳定性，std 表示独立事件间离散程度稳定性，Q10/Q90 分别表示下尾/上尾覆盖稳定性，Q50 表示典型事件水平稳定性。
+P90 RSE 与 median RSE 分成两张六面板图，避免六个来源类别的曲线相互遮挡。每张图的前五个面板依次为 mean、std、Q10、Q50、Q90，最后一个面板汇总全部“特征 × 五种统计量”。P90 图用于 10% 判稳，median 图描述典型特征。纵轴是无量纲相对抽样不确定性，不是特征幅值或能量。
+
+样本量网格参数直接放在 2.7.1 代码单元开头，可手动调整：`RSE_GRID_DENSE_UNTIL` 控制小样本逐整数区间，`RSE_GRID_GROWTH` 控制随后相邻点的几何增长倍率，`RSE_GRID_MAX_POINTS` 控制每类最多网格点数。默认值 10、1.7、18 比原网格更稀疏，以减少 Bootstrap 计算次数；全量样本点始终保留。
 
 RSE 是标准误与估计量绝对值的比值，没有 100% 上限。RSE 大于 100% 表示 Bootstrap 标准误已经大于统计量自身绝对值，即相对尺度上极不稳定；本数据主要由均值/分位数接近零造成分母效应，以及 `k_hl/k_sc/k_res_*` 等比值型、重尾特征在重采样中剧烈变化造成。此时应结合绝对标准误、Bootstrap 区间、近零分母标记和原始分布判断，不能把数值直接解释成“误差概率超过 100%”。
 
@@ -282,12 +285,21 @@ RSE 是标准误与估计量绝对值的比值，没有 100% 上限。RSE 大于
             """
 RSE_STABILITY_THRESHOLD = 0.10
 STABILITY_CONSECUTIVE_POINTS = 2
+RSE_GRID_DENSE_UNTIL = 10      # <= 此样本量时逐整数检查
+RSE_GRID_GROWTH = 1.7          # 调大可增大网格间距、提高运行速度
+RSE_GRID_MAX_POINTS = 18       # 每个来源类别最多网格点数（含全量点）
 bk_0_30ms_df, bk_0_30ms_selection_audit = select_bk_0_30ms_samples(df)
 non_bk_df = df.loc[~df['source_label'].astype(str).str.startswith('BK')]
 sample_sufficiency_df = pd.concat([non_bk_df, bk_0_30ms_df], axis=0, ignore_index=False)
 stat_sample_sizes_by_label = {
-    str(label): list(range(min(max(int(CONFIG.sample_stability_min_samples), 2), len(group)), len(group) + 1))
-    for label, group in bk_0_30ms_df.groupby('source_label', sort=True)
+    str(label): build_sample_size_grid(
+        len(group),
+        min_samples=CONFIG.sample_stability_min_samples,
+        dense_until=RSE_GRID_DENSE_UNTIL,
+        growth=RSE_GRID_GROWTH,
+        max_points=RSE_GRID_MAX_POINTS,
+    )
+    for label, group in sample_sufficiency_df.groupby('source_label', sort=True)
 }
 bootstrap_statistic_detail, bootstrap_statistic_curve, bootstrap_statistic_summary = estimate_bootstrap_statistic_stability(
     sample_sufficiency_df,
@@ -305,12 +317,20 @@ write_csv(bootstrap_statistic_curve, RUN_DIR / 'bootstrap_statistic_stability_cu
 write_csv(bootstrap_statistic_summary, RUN_DIR / 'bootstrap_statistic_stability_summary.csv')
 bootstrap_statistic_by_measure = summarize_bootstrap_rse_by_statistic(bootstrap_statistic_detail)
 write_csv(bootstrap_statistic_by_measure, RUN_DIR / 'bootstrap_statistic_stability_by_statistic.csv')
-bootstrap_rse_plot_path = RUN_DIR / 'plots/bootstrap_statistic_rse_curves.png'
+bootstrap_p90_rse_plot_path = RUN_DIR / 'plots/bootstrap_statistic_p90_rse_curves.png'
+bootstrap_median_rse_plot_path = RUN_DIR / 'plots/bootstrap_statistic_median_rse_curves.png'
 plot_bootstrap_rse_curves(
     bootstrap_statistic_curve,
-    bootstrap_rse_plot_path,
+    bootstrap_p90_rse_plot_path,
     statistic_curve=bootstrap_statistic_by_measure,
     threshold=RSE_STABILITY_THRESHOLD,
+    summary_column='p90_rse',
+)
+plot_bootstrap_rse_curves(
+    bootstrap_statistic_curve,
+    bootstrap_median_rse_plot_path,
+    statistic_curve=bootstrap_statistic_by_measure,
+    summary_column='median_rse',
 )
 
 sample_stability_parameter_table = pd.DataFrame([
@@ -318,12 +338,16 @@ sample_stability_parameter_table = pd.DataFrame([
     {'参数': 'statistics', '当前值': 'mean, std, Q10, Q50, Q90', '含义': '每个特征计算的统计量'},
     {'参数': 'RSE threshold', '当前值': RSE_STABILITY_THRESHOLD, '含义': 'P90 RSE稳定阈值'},
     {'参数': 'consecutive points', '当前值': STABILITY_CONSECUTIVE_POINTS, '含义': '连续满足阈值的点数'},
+    {'参数': 'grid dense until', '当前值': RSE_GRID_DENSE_UNTIL, '含义': '逐整数样本量网格上限'},
+    {'参数': 'grid growth', '当前值': RSE_GRID_GROWTH, '含义': '大样本区几何增长倍率；越大越快'},
+    {'参数': 'grid max points', '当前值': RSE_GRID_MAX_POINTS, '含义': '每类最多样本量网格点数'},
 ])
 show_table('2.7.1 Bootstrap统计稳定性参数', sample_stability_parameter_table)
 show_table('2.7.1 各来源类别统计稳定性结论', bootstrap_statistic_summary)
 show_table('2.7.1 Median/P90/最大RSE曲线明细', bootstrap_statistic_curve, rows=60)
 show_table('2.7.1 当前最大样本量的高RSE特征统计量', bootstrap_statistic_detail.loc[bootstrap_statistic_detail['sample_size'].eq(bootstrap_statistic_detail['total_rows'])].sort_values('rse', ascending=False), rows=50)
-show_image('2.7.1 Bootstrap统计特征稳定性RSE曲线', bootstrap_rse_plot_path)
+show_image('2.7.1 Bootstrap统计特征稳定性P90 RSE曲线', bootstrap_p90_rse_plot_path)
+show_image('2.7.1 Bootstrap统计特征稳定性median RSE曲线', bootstrap_median_rse_plot_path)
 """
         )
     )
