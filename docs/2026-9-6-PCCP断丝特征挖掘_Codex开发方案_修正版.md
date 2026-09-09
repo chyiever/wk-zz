@@ -136,9 +136,10 @@ FL：
 -   CSV 中有数百个候选特征，本节先对全部特征计算 `six_class_f_ratio = 类间均值方差 / 类内方差均值`，再选择差异最大的前 `distribution_top_n` 个特征用于图示。
 -   所有含 `feature`、`selected_features`、`recommended_features` 等字段的表格，都追加中文含义列，便于人工审查特征物理意义。
 -   2.7.1 按来源类别进行全部派生窗口的样本量稳定性估计，不参与最终特征评分，只用于判断 `BK00/BK05/FL00/FL05/QJ00/QJ05` 每类信号的均值统计量在多少特征行后趋于稳定。
--   六类稳定性必须独立计算：每一类分别进行类内中位数插补、类内标准差估计和 Bootstrap，并使用由 `random_state` 与类别名共同派生的独立随机流。增加、删除或重排其他类别不得改变该类曲线。
--   对同一样本量独立抽取两组 bootstrap 子样本，按该类别各特征的类内标准差归一化均值差，再计算标准化 RMS 误差。该指标不依赖全局标准化原点，数值表示两组均值平均相差多少个类内标准差，可用于比较各类别相对于自身波动的抽样稳定性，但不用于比较原始信号幅值。
--   曲线同时报告双 Bootstrap 标准化 RMS 误差的均值和 P90；稳定样本量只按更保守的 P90 连续低于 `sample_stability_pairwise_threshold` 判定。最大样本量处仍使用有放回 Bootstrap，不会天然归零。
+-   六类稳定性必须独立计算：每一类分别进行类内中位数插补、类内特征 RMS 幅值估计和 Bootstrap，并使用由 `random_state` 与类别名共同派生的独立随机流。增加、删除或重排其他类别不得改变该类曲线。
+-   对同一样本量独立抽取两组 bootstrap 子样本，以该类别每个特征的完整样本 RMS 幅值 `r_j=sqrt(mean(x_j^2))` 归一化均值差，再计算相对 RMS 误差。该指标不依赖其他类别，并对特征计量单位的乘法变换保持不变；数值表示两组均值差占本类特征典型幅值的综合比例。
+-   不使用类内标准差作为分母，因为将所有类别、所有特征强制为单位方差后，双 Bootstrap 均值差的理论尺度均约为 `sqrt(2/n)`，数百个特征取 RMS 后会使六类曲线机械性重合，丢失类别自身的相对波动差异。
+-   曲线同时报告双 Bootstrap 类内相对 RMS 误差的均值和 P90；稳定样本量只按更保守的 P90 连续低于 `sample_stability_pairwise_threshold` 判定。最大样本量处仍使用有放回 Bootstrap，不会天然归零。
 -   2.7.1 输出 `sample_stability_curve.csv`、`sample_stability_summary.csv` 和 `plots/sample_stability_curves.png`。
 -   2.7.2 针对 BK 一个物理事件派生六个重叠窗口的问题，只保留 `window_mode='0_30'` 且时间边界为 0-30 ms 的窗口，使每个 `event_id` 最多贡献一个独立测试样本。
 -   2.7.2 的样本量网格按整数逐点加密：从 `sample_stability_min_samples` 开始，以步长 1 检查到各 BK 类别的全部独立事件数；当前 BK00 检查 5-17，BK05 检查 5-10。

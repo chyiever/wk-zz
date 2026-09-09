@@ -375,6 +375,100 @@ def main() -> None:
         )
     )
 
+    nb["cells"].append(
+        md_cell(
+            "## 附加预测：`dataset_build_260518_features_gpu`\n\n"
+            "本节使用当前已选实验组与模型，对\n"
+            "`E:\\\\codes\\\\ZZ-BK\\\\outputs\\\\dataset_build_260518_features_gpu`\n"
+            "中的 `*_features.csv` 样本执行标签预测。"
+        )
+    )
+
+    nb["cells"].append(
+        code_cell(
+            "# 附加预测目录（可按需修改）\n"
+            "EXTRA_FEATURE_ROOT = PROJECT_ROOT / r\"outputs\\\\dataset_build_260518_features_gpu\"\n"
+            "extra_files = sorted(EXTRA_FEATURE_ROOT.glob('*_features.csv'))\n"
+            "print('EXTRA_FEATURE_ROOT =', EXTRA_FEATURE_ROOT)\n"
+            "print('extra feature files =', len(extra_files))\n"
+            "for p in extra_files[:20]:\n"
+            "    print('  -', p.name)\n"
+        )
+    )
+
+    nb["cells"].append(
+        code_cell(
+            "extra_rows = []\n"
+            "extra_summary_rows = []\n\n"
+            "for exp_name in experiments:\n"
+            "    exp_dir = MODEL_ROOT / exp_name\n"
+            "    selected_features = load_selected_features(exp_dir)\n"
+            "    model, _ = load_model(exp_dir, MODEL_TYPE)\n"
+            "    trained_threshold = load_trained_threshold(exp_dir, MODEL_TYPE)\n"
+            "    if USE_TRAINED_THRESHOLD and trained_threshold is not None:\n"
+            "        threshold_in_use = float(trained_threshold)\n"
+            "        threshold_source = 'trained'\n"
+            "    else:\n"
+            "        threshold_in_use = float(PROB_THRESHOLD)\n"
+            "        threshold_source = 'manual'\n\n"
+            "    print('\\n' + '-' * 88)\n"
+            "    print(f'[EXTRA] Experiment={exp_name}, threshold={threshold_in_use:.6f} ({threshold_source})')\n\n"
+            "    for feature_csv in extra_files:\n"
+            "        df = pd.read_csv(feature_csv)\n"
+            "        missing = [c for c in selected_features if c not in df.columns]\n"
+            "        if missing:\n"
+            "            print(f'  [SKIP] {feature_csv.name}: missing features -> {missing}')\n"
+            "            continue\n\n"
+            "        # 保持特征顺序与训练完全一致\n"
+            "        x = df.loc[:, selected_features].apply(pd.to_numeric, errors='coerce')\n"
+            "        prob_pos = model.predict_proba(x)[:, 1]\n"
+            "        pred = (prob_pos >= threshold_in_use).astype(int)\n\n"
+            "        ts = build_time_series(df)\n"
+            "        out = pd.DataFrame({\n"
+            "            'experiment': exp_name,\n"
+            "            'model_type': MODEL_TYPE,\n"
+            "            'feature_file': feature_csv.name,\n"
+            "            'source_file_name': df.get('source_file_name', ''),\n"
+            "            'window_id': df.get('window_id', np.arange(len(df))),\n"
+            "            'window_start_datetime': ts,\n"
+            "            'prob_pos': prob_pos,\n"
+            "            'prob_pos_pct': prob_pos * 100.0,\n"
+            "            'pred_label': pred,\n"
+            "            'threshold_in_use': threshold_in_use,\n"
+            "            'threshold_source': threshold_source,\n"
+            "        })\n\n"
+            "        n_total = int(len(out))\n"
+            "        n_pos = int((out['pred_label'] == 1).sum())\n"
+            "        n_neg = n_total - n_pos\n"
+            "        print(f'  {feature_csv.name}: pos={n_pos}, neg={n_neg}, total={n_total}')\n\n"
+            "        extra_rows.append(out)\n"
+            "        extra_summary_rows.append({\n"
+            "            'experiment': exp_name,\n"
+            "            'model_type': MODEL_TYPE,\n"
+            "            'feature_file': feature_csv.name,\n"
+            "            'positive_count': n_pos,\n"
+            "            'negative_count': n_neg,\n"
+            "            'total_count': n_total,\n"
+            "            'threshold': threshold_in_use,\n"
+            "            'threshold_source': threshold_source,\n"
+            "        })\n\n"
+            "if not extra_rows:\n"
+            "    print('[EXTRA] 没有生成预测结果，请检查输入目录或特征列一致性。')\n"
+            "else:\n"
+            "    extra_pred_df = pd.concat(extra_rows, ignore_index=True)\n"
+            "    extra_summary_df = pd.DataFrame(extra_summary_rows)\n"
+            "    extra_out_dir = OUTPUT_DIR / 'extra_dataset_build_260518_features_gpu'\n"
+            "    extra_out_dir.mkdir(parents=True, exist_ok=True)\n"
+            "    extra_pred_csv = extra_out_dir / f'predictions_{MODEL_TYPE}.csv'\n"
+            "    extra_summary_csv = extra_out_dir / f'summary_{MODEL_TYPE}.csv'\n"
+            "    extra_pred_df.to_csv(extra_pred_csv, index=False, encoding='utf-8-sig')\n"
+            "    extra_summary_df.to_csv(extra_summary_csv, index=False, encoding='utf-8-sig')\n"
+            "    print('saved:', extra_pred_csv)\n"
+            "    print('saved:', extra_summary_csv)\n"
+            "    display(extra_summary_df.head(50))\n"
+        )
+    )
+
     out_path = Path(r"E:\codes\ZZ-BK\notebooks\2026-05-25-realdata_label_prediction_cross_condition.ipynb")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8", newline="\n") as f:
