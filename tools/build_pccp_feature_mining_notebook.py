@@ -217,8 +217,10 @@ show_table('读取异常与低有效特征行审计', load_issues)
         code(
             """
 from pccp_feature_mining.distribution_analysis import (
-    estimate_source_feature_stability,
-    plot_source_feature_stability_curves,
+    estimate_bootstrap_statistic_stability,
+    estimate_feature_distribution_mmd,
+    plot_bootstrap_rse_curves,
+    plot_mmd_convergence_curve,
     select_distribution_features,
     run_pca_projection,
     run_umap_projection,
@@ -262,39 +264,52 @@ if not umap_projection.empty:
     cells.append(
         md(
             """
-### 2.7.1 全部派生窗口的来源类别特征均值稳定性
+### 2.7.1 统计特征稳定性：Bootstrap RSE
 
-对 `BK00/BK05/FL00/FL05/QJ00/QJ05` 的全部有效特征行估计均值稳定性。六类分别进行类内中位数插补、类内标准差归一化和独立 Bootstrap，任一类别的曲线不受其他类别是否加入影响。误差为两组 Bootstrap 均值向量的类内标准化 RMS 差异；该无量纲数值可比较各类的相对抽样稳定性，但不表示原始信号幅值差异。BK 的每个物理事件会派生六个相互重叠的窗口，因此这里的 BK 行数不能解释为独立事件数；独立事件口径见 2.7.2。
+BK 每个物理事件仅保留 0-30 ms 窗口，FL/QJ 使用原始样本。对每个来源类别和样本量重复 Bootstrap；每个特征计算 mean、std、Q10、Q50、Q90，再以 `RSE = Bootstrap标准误 / |Bootstrap估计均值|` 计算相对标准误。汇总全部“特征 × 统计量”的 median RSE、P90 RSE 与最大 RSE；默认 P90 RSE 连续两个点不高于 10% 时判定稳定。
 """
         )
     )
     cells.append(
         code(
             """
-sample_stability_curve, sample_stability_summary = estimate_source_feature_stability(
-    df,
+RSE_STABILITY_THRESHOLD = 0.10
+STABILITY_CONSECUTIVE_POINTS = 2
+bk_0_30ms_df, bk_0_30ms_selection_audit = select_bk_0_30ms_samples(df)
+non_bk_df = df.loc[~df['source_label'].astype(str).str.startswith('BK')]
+sample_sufficiency_df = pd.concat([non_bk_df, bk_0_30ms_df], axis=0, ignore_index=False)
+stat_sample_sizes_by_label = {
+    str(label): list(range(min(max(int(CONFIG.sample_stability_min_samples), 2), len(group)), len(group) + 1))
+    for label, group in bk_0_30ms_df.groupby('source_label', sort=True)
+}
+bootstrap_statistic_detail, bootstrap_statistic_curve, bootstrap_statistic_summary = estimate_bootstrap_statistic_stability(
+    sample_sufficiency_df,
     feature_cols,
-    repeats=CONFIG.sample_stability_repeats,
+    sample_sizes_by_label=stat_sample_sizes_by_label,
+    repeats=max(int(CONFIG.sample_stability_repeats), 200),
     min_samples=CONFIG.sample_stability_min_samples,
-    pairwise_threshold=CONFIG.sample_stability_pairwise_threshold,
-    consecutive_points=CONFIG.sample_stability_consecutive_points,
+    rse_threshold=RSE_STABILITY_THRESHOLD,
+    consecutive_points=STABILITY_CONSECUTIVE_POINTS,
     random_state=CONFIG.random_state,
 )
-write_csv(sample_stability_curve, RUN_DIR / 'sample_stability_curve.csv')
-write_csv(sample_stability_summary, RUN_DIR / 'sample_stability_summary.csv')
-sample_stability_plot_path = RUN_DIR / 'plots/sample_stability_curves.png'
-plot_source_feature_stability_curves(sample_stability_curve, sample_stability_plot_path)
+write_csv(bk_0_30ms_selection_audit, RUN_DIR / 'sample_sufficiency_bk_0_30ms_audit.csv')
+write_csv(bootstrap_statistic_detail, RUN_DIR / 'bootstrap_statistic_stability_detail.csv')
+write_csv(bootstrap_statistic_curve, RUN_DIR / 'bootstrap_statistic_stability_curve.csv')
+write_csv(bootstrap_statistic_summary, RUN_DIR / 'bootstrap_statistic_stability_summary.csv')
+bootstrap_rse_plot_path = RUN_DIR / 'plots/bootstrap_statistic_rse_curves.png'
+plot_bootstrap_rse_curves(bootstrap_statistic_curve, bootstrap_rse_plot_path)
 
 sample_stability_parameter_table = pd.DataFrame([
-    {'参数': 'sample_stability_repeats', '当前值': CONFIG.sample_stability_repeats, '含义': '每个样本量重复抽样次数'},
-    {'参数': 'sample_stability_min_samples', '当前值': CONFIG.sample_stability_min_samples, '含义': '自动样本量网格的最小起点'},
-    {'参数': 'sample_stability_pairwise_threshold', '当前值': CONFIG.sample_stability_pairwise_threshold, '含义': '双Bootstrap类内标准化RMS差异P90稳定阈值'},
-    {'参数': 'sample_stability_consecutive_points', '当前值': CONFIG.sample_stability_consecutive_points, '含义': '连续满足阈值的样本量点数'},
+    {'参数': 'Bootstrap repeats', '当前值': max(int(CONFIG.sample_stability_repeats), 200), '含义': '每个类别、每个样本量重复次数'},
+    {'参数': 'statistics', '当前值': 'mean, std, Q10, Q50, Q90', '含义': '每个特征计算的统计量'},
+    {'参数': 'RSE threshold', '当前值': RSE_STABILITY_THRESHOLD, '含义': 'P90 RSE稳定阈值'},
+    {'参数': 'consecutive points', '当前值': STABILITY_CONSECUTIVE_POINTS, '含义': '连续满足阈值的点数'},
 ])
-show_table('2.7.1 全部派生窗口样本量稳定性估计参数', sample_stability_parameter_table)
-show_table('2.7.1 各来源类别建议稳定样本量', sample_stability_summary)
-show_table('2.7.1 全部派生窗口样本量稳定性曲线明细', sample_stability_curve, rows=60)
-show_image('2.7.1 各来源类别特征均值稳定性曲线', sample_stability_plot_path)
+show_table('2.7.1 Bootstrap统计稳定性参数', sample_stability_parameter_table)
+show_table('2.7.1 各来源类别统计稳定性结论', bootstrap_statistic_summary)
+show_table('2.7.1 Median/P90/最大RSE曲线明细', bootstrap_statistic_curve, rows=60)
+show_table('2.7.1 当前最大样本量的高RSE特征统计量', bootstrap_statistic_detail.loc[bootstrap_statistic_detail['sample_size'].eq(bootstrap_statistic_detail['total_rows'])].sort_values('rse', ascending=False), rows=50)
+show_image('2.7.1 Bootstrap统计特征稳定性RSE曲线', bootstrap_rse_plot_path)
 """
         )
     )
@@ -302,56 +317,39 @@ show_image('2.7.1 各来源类别特征均值稳定性曲线', sample_stability_
     cells.append(
         md(
             """
-### 2.7.2 BK 断丝事件的 0-30 ms 单窗口样本稳定性
+### 2.7.2 特征分布稳定性：MMD
 
-一个物理 BK 事件会派生六个重叠窗口。本小节只保留 `window_mode='0_30'` 且实际边界为 0-30 ms 的窗口，保证每个 `event_id` 最多贡献一个样本，再分别测试 `BK00` 和 `BK05` 的均值稳定性。图中同时加入 FL00、FL05、QJ00、QJ05；六类均独立进行插补、尺度估计和 Bootstrap，加入其他类别不会改变任一类别的误差曲线。
+用 Gaussian-RBF MMD 比较每个样本量的高维联合特征分布与全量参考分布。数百维特征先做稳健标准化，再用随机傅里叶特征近似核均值。六类等权，`sample_size_per_label` 表示每类抽取数；MMD P90 连续两个点不高于 0.05 时判定整体特征空间收敛。
 """
         )
     )
     cells.append(
         code(
             """
-from pccp_feature_mining.distribution_analysis import (
-    estimate_source_feature_stability,
-    plot_source_feature_stability_curves,
-    select_bk_0_30ms_samples,
-)
-
-bk_0_30ms_df, bk_0_30ms_selection_audit = select_bk_0_30ms_samples(df)
-bk_0_30ms_sample_sizes_by_label = {
-    str(label): list(range(min(max(int(CONFIG.sample_stability_min_samples), 1), len(group)), len(group) + 1))
-    for label, group in bk_0_30ms_df.groupby('source_label', sort=True)
-}
-non_bk_df = df.loc[~df['source_label'].astype(str).str.startswith('BK')]
-bk_0_30ms_comparison_df = pd.concat([non_bk_df, bk_0_30ms_df], axis=0)
-bk_0_30ms_comparison_curve, bk_0_30ms_comparison_summary = estimate_source_feature_stability(
-    bk_0_30ms_comparison_df,
+MMD_STABILITY_THRESHOLD = 0.05
+MMD_RFF_COMPONENTS = 512
+mmd_max_size_per_label = int(sample_sufficiency_df.groupby('source_label').size().min())
+mmd_start = min(max(int(CONFIG.sample_stability_min_samples), 2), mmd_max_size_per_label)
+mmd_sample_sizes = list(range(mmd_start, mmd_max_size_per_label + 1)) if mmd_max_size_per_label <= 100 else None
+mmd_convergence_curve, mmd_convergence_summary = estimate_feature_distribution_mmd(
+    sample_sufficiency_df,
     feature_cols,
-    sample_sizes_by_label=bk_0_30ms_sample_sizes_by_label,
-    repeats=CONFIG.sample_stability_repeats,
+    sample_sizes=mmd_sample_sizes,
+    repeats=max(int(CONFIG.sample_stability_repeats), 100),
     min_samples=CONFIG.sample_stability_min_samples,
-    pairwise_threshold=CONFIG.sample_stability_pairwise_threshold,
-    consecutive_points=CONFIG.sample_stability_consecutive_points,
+    rff_components=MMD_RFF_COMPONENTS,
+    mmd_threshold=MMD_STABILITY_THRESHOLD,
+    consecutive_points=STABILITY_CONSECUTIVE_POINTS,
+    max_rows=10000,
     random_state=CONFIG.random_state,
 )
-bk_0_30ms_stability_curve = bk_0_30ms_comparison_curve.loc[
-    bk_0_30ms_comparison_curve['source_label'].astype(str).str.startswith('BK')
-].copy()
-bk_0_30ms_stability_summary = bk_0_30ms_comparison_summary.loc[
-    bk_0_30ms_comparison_summary['source_label'].astype(str).str.startswith('BK')
-].copy()
-write_csv(bk_0_30ms_selection_audit, RUN_DIR / 'bk_0_30ms_selection_audit.csv')
-write_csv(bk_0_30ms_stability_curve, RUN_DIR / 'bk_0_30ms_sample_stability_curve.csv')
-write_csv(bk_0_30ms_stability_summary, RUN_DIR / 'bk_0_30ms_sample_stability_summary.csv')
-write_csv(bk_0_30ms_comparison_curve, RUN_DIR / 'bk_0_30ms_with_nonbk_sample_stability_curve.csv')
-write_csv(bk_0_30ms_comparison_summary, RUN_DIR / 'bk_0_30ms_with_nonbk_sample_stability_summary.csv')
-bk_0_30ms_stability_plot_path = RUN_DIR / 'plots/bk_0_30ms_with_nonbk_sample_stability_curves.png'
-plot_source_feature_stability_curves(bk_0_30ms_comparison_curve, bk_0_30ms_stability_plot_path)
-
-show_table('2.7.2 BK 0-30 ms窗口筛选审计', bk_0_30ms_selection_audit)
-show_table('2.7.2 BK 0-30 ms单窗口建议稳定样本量', bk_0_30ms_stability_summary)
-show_table('2.7.2 BK 0-30 ms单窗口样本量稳定性曲线明细', bk_0_30ms_stability_curve, rows=60)
-show_image('2.7.2 BK 0-30 ms单窗口校正后的六类特征均值稳定性曲线', bk_0_30ms_stability_plot_path)
+write_csv(mmd_convergence_curve, RUN_DIR / 'feature_distribution_mmd_curve.csv')
+write_csv(mmd_convergence_summary, RUN_DIR / 'feature_distribution_mmd_summary.csv')
+mmd_plot_path = RUN_DIR / 'plots/feature_distribution_mmd_convergence.png'
+plot_mmd_convergence_curve(mmd_convergence_curve, mmd_plot_path, threshold=MMD_STABILITY_THRESHOLD)
+show_table('2.7.2 整体特征空间MMD收敛结论', mmd_convergence_summary)
+show_table('2.7.2 各样本量MMD曲线明细', mmd_convergence_curve, rows=100)
+show_image('2.7.2 整体特征空间MMD收敛曲线', mmd_plot_path)
 """
         )
     )

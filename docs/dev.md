@@ -1297,7 +1297,7 @@
   - `plots/sample_stability_curves.png`
 - 该分析只回答每个来源类别当前特征均值统计量何时趋于稳定，不参与第 06 节 Bootstrap 特征排名稳定性，也不改变最终特征评分公式。
 - 2026-09-08 修正：旧版“全量均值参照法”在样本量等于当前全量样本数时会与自身比较，导致最大样本量处相对 L2 误差天然接近 0，并可能造成“每类都刚好在现有最大样本量稳定”的假象；已改为双Bootstrap均值一致性法，最大样本量处也使用有放回抽样比较两个独立均值估计，不再强制归零。
-- 2026-09-09 再修正：本节早期版本先对传入的多类别数据拟合全局 `StandardScaler`，再以标准化均值向量的模作为相对 L2 分母。该误差不具平移不变性，加入 FL/QJ 后会改变 BK 所在坐标原点和误差分母，因此同一批 BK 样本的误差可从 1.x 人为降到 0.x。此版本结果已判定为不可跨运行比较，并由后述“类别独立标准化 RMS 误差”替代。
+- 2026-09-09 再修正：本节早期版本先对传入的多类别数据拟合全局 `StandardScaler`，再以标准化均值向量的模作为相对 L2 分母。该误差不具平移不变性，加入 FL/QJ 后会改变 BK 所在坐标原点和误差分母，因此同一批 BK 样本的误差可从 1.x 人为降到 0.x。此版本结果已判定为不可跨运行比较；后续替代指标及再次修正见本日志后文。
 - notebook 显示工具新增 `sync_output_counters()`，每个产生表/图的代码单元会先把计数器同步到该单元在全 notebook 中的预期位置，避免单独重跑 2.7 时出现“表 8 / 图 1”这类局部编号。
 
 ## 2026-09-08（补充）PCCP 2.7.2 BK 单窗口样本稳定性
@@ -1329,3 +1329,28 @@
 - 删除配置项 `sample_stability_adjacent_threshold`。最大样本量仍进行两组有放回 Bootstrap，因此误差反映当前经验分布下的均值抽样不确定性，不会因使用全量行而强制为 0。
 - 六类曲线的可比范围是“相对于各自类内波动的均值抽样稳定性”；由于每类归一化基准不同，不能将该曲线解释为六类原始信号幅值差异。
 - 已增加不变性校验：同一类别单独输入与加入均值、尺度显著不同的其他类别后，其曲线和汇总结果必须逐字段完全一致。
+
+## 2026-09-09（再修正）避免六类稳定性曲线机械性重合
+
+- 问题复核：上一版对每类独立拟合 `StandardScaler`，使每个类别、每个特征的类内方差都等于 1。两组大小为 `n` 的独立 Bootstrap 均值差理论方差因此统一为约 `2/n`；数百个特征再取 RMS 后发生集中，使六类曲线几乎都变成同一条 `sqrt(2/n)` 曲线。真实数据相同样本量处的类别间曲线变异系数仅约 2.5%，重合是指标归一化造成的，不是绘图错误。
+- 修复：每类、每个特征改用完整样本的 RMS 幅值 `r_j=sqrt(mean(x_j^2))` 作为分母，误差定义为 `sqrt(mean(((mean_a - mean_b) / r_j) ** 2))`。
+- 新指标继续满足：类内插补、类内尺度、类别独立随机流，加入或删除其他类别后本类结果逐值不变；同时对特征单位的乘法缩放保持不变。
+- 新指标不再把类内方差强制成 1，因此会保留 `std(x_j)/r_j` 所表达的类别相对波动和信噪比差异。所有均值抽样误差仍会大致按 `1/sqrt(n)` 下降，曲线趋势相似属于抽样理论预期，但不应再被归一化机械性重合。
+- 输出字段更名为 `paired_bootstrap_relative_rms_gap_mean`、`paired_bootstrap_relative_rms_gap_p90` 和 `final_paired_bootstrap_relative_rms_gap_p90`，避免把新指标误称为标准化标准差单位误差。
+
+## 2026-09-09（更新）PCCP Notebook 2.7 样本充分性双层评估
+
+- 参考 `docs/PCCP断丝监测_特征样本量充分性评估方法学习报告.md`，将 `notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb` 的 2.7 节重构为两个互补小节。
+- `2.7.1 统计特征稳定性：Bootstrap RSE`：
+  - BK 仅保留每个物理事件的 0-30 ms 单窗口，FL/QJ 使用原始样本；按 `source_label` 独立评估。
+  - 每个样本量至少重复 200 次有放回 Bootstrap；每个特征、每轮计算 `mean/std/Q10/Q50/Q90`。
+  - 对每个“特征 × 统计量”计算 `bootstrap_se` 和 `RSE = bootstrap_se / |bootstrap_estimate|`，并输出分母近零标记。
+  - 每个样本量汇总 `median_rse`、`p90_rse`、`max_rse`；默认以 P90 RSE 不高于 10% 且连续两个样本量点满足为稳定。
+  - 新增输出：`sample_sufficiency_bk_0_30ms_audit.csv`、`bootstrap_statistic_stability_detail.csv`、`bootstrap_statistic_stability_curve.csv`、`bootstrap_statistic_stability_summary.csv`、`plots/bootstrap_statistic_rse_curves.png`。
+- `2.7.2 特征分布稳定性：MMD`：
+  - 使用中位数插补、`RobustScaler` 和 Gaussian-RBF 核，带宽采用两两距离中位数启发式。
+  - 采用 512 维随机傅里叶特征近似 MMD，避免数百维特征下显式构造二次复杂度核矩阵。
+  - 六个来源类别等权；`sample_size_per_label` 表示每类 Bootstrap 样本数，避免大样本 FL/QJ 掩盖小样本 BK。
+  - 输出 MMD 均值、标准差、P90；默认以 MMD P90 不高于 0.05 且连续两个点满足为整体特征空间收敛。
+  - 新增输出：`feature_distribution_mmd_curve.csv`、`feature_distribution_mmd_summary.csv`、`plots/feature_distribution_mmd_convergence.png`。
+- 实现位置：`src/pccp_feature_mining/distribution_analysis.py` 新增统计稳定性、RFF-MMD 及两类绘图函数；`tools/build_pccp_feature_mining_notebook.py` 同步更新，防止重新生成 Notebook 时丢失 2.7 新逻辑。

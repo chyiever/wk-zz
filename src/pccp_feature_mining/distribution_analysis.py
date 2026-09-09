@@ -311,6 +311,370 @@ def _first_stable_size(
     return np.nan
 
 
+def estimate_bootstrap_statistic_stability(
+    frame: pd.DataFrame,
+    feature_columns: list[str] | tuple[str, ...],
+    label_col: str = "source_label",
+    sample_sizes: list[int] | tuple[int, ...] | None = None,
+    sample_sizes_by_label: dict[str, list[int] | tuple[int, ...]] | None = None,
+    repeats: int = 200,
+    min_samples: int = 5,
+    rse_threshold: float = 0.10,
+    consecutive_points: int = 2,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Bootstrap five statistics per feature and summarize their relative SE.
+
+    For every source label and sample size, the function draws ``repeats`` samples
+    with replacement.  Each replicate estimates the mean, standard deviation and
+    Q10/Q50/Q90 of every feature.  For statistic ``theta``, relative standard error
+    is ``std(theta_boot) / abs(mean(theta_boot))``.  A scale-aware numerical floor
+    is used only when a statistic is zero or extremely close to zero; these cases
+    remain visible through the large RSE and ``denominator_was_floored`` flag.
+
+    Returns ``detail`` (one row per label/size/feature/statistic), ``curve`` (median,
+    P90 and maximum RSE at each label/size), and ``summary`` (the first sample size
+    whose P90 RSE stays below the threshold for the requested consecutive points).
+    """
+
+    if label_col not in frame.columns:
+        raise KeyError(f"{label_col!r} not found in frame")
+    if not feature_columns:
+        detail_columns = [
+            label_col, "total_rows", "sample_size", "feature", "statistic",
+            "bootstrap_estimate", "bootstrap_se", "rse", "denominator_was_floored",
+        ]
+        curve_columns = [
+            label_col, "total_rows", "sample_size", "median_rse", "p90_rse",
+            "max_rse", "feature_statistic_count", "repeats_used", "is_full_sample_size",
+        ]
+        summary_columns = [
+            label_col, "total_rows", "recommended_stable_sample_size", "stability_status",
+            "rse_threshold", "consecutive_points", "final_median_rse", "final_p90_rse",
+            "final_max_rse",
+        ]
+        return (
+            pd.DataFrame(columns=detail_columns),
+            pd.DataFrame(columns=curve_columns),
+            pd.DataFrame(columns=summary_columns),
+        )
+
+    labels = frame[label_col].astype(str)
+    statistic_names = np.asarray(["mean", "std", "q10", "q50", "q90"], dtype=object)
+    detail_rows: list[dict[str, object]] = []
+    curve_rows: list[dict[str, object]] = []
+    summary_rows: list[dict[str, object]] = []
+
+    for label in sorted(labels.dropna().unique()):
+        label_mask = labels.eq(label).to_numpy()
+        group_frame = impute_with_median(numeric_feature_frame(frame.loc[label_mask, :], feature_columns))
+        group = group_frame.to_numpy(dtype=float)
+        total_rows = int(group.shape[0])
+        if total_rows == 0:
+            continue
+
+        label_sample_sizes = None if sample_sizes_by_label is None else sample_sizes_by_label.get(str(label))
+        configured_sizes = label_sample_sizes if label_sample_sizes is not None else sample_sizes
+        sizes = list(configured_sizes) if configured_sizes is not None else _default_sample_sizes(total_rows, min_samples)
+        sizes = sorted({int(n) for n in sizes if 2 <= int(n) <= total_rows})
+        if not sizes:
+            continue
+        if total_rows not in sizes:
+            sizes.append(total_rows)
+
+        seed_payload = f"bootstrap-statistics\0{int(random_state)}\0{label}".encode("utf-8")
+        rng = np.random.default_rng(int.from_bytes(hashlib.sha256(seed_payload).digest()[:8], "little"))
+        curve_for_label: list[dict[str, object]] = []
+
+        feature_scale = np.nanpercentile(np.abs(group), 90, axis=0)
+        feature_scale = np.where(np.isfinite(feature_scale), feature_scale, 0.0)
+
+        for size in sizes:
+            current_repeats = max(int(repeats), 2)
+            boot = np.empty((current_repeats, 5, group.shape[1]), dtype=float)
+            for rep in range(current_repeats):
+                sampled = group[rng.choice(total_rows, size=size, replace=True), :]
+                boot[rep, 0, :] = np.mean(sampled, axis=0)
+                boot[rep, 1, :] = np.std(sampled, axis=0, ddof=1)
+                boot[rep, 2:5, :] = np.quantile(sampled, [0.10, 0.50, 0.90], axis=0)
+
+            estimates = np.mean(boot, axis=0)
+            bootstrap_se = np.std(boot, axis=0, ddof=1)
+            denominator_floor = np.maximum(feature_scale * 1e-12, np.finfo(float).eps)
+            denominator = np.maximum(np.abs(estimates), denominator_floor[None, :])
+            denominator_was_floored = np.abs(estimates) < denominator_floor[None, :]
+            rse = bootstrap_se / denominator
+
+            finite_rse = rse[np.isfinite(rse)]
+            curve_row = {
+                label_col: str(label),
+                "total_rows": total_rows,
+                "sample_size": int(size),
+                "median_rse": float(np.median(finite_rse)) if finite_rse.size else np.nan,
+                "p90_rse": float(np.percentile(finite_rse, 90)) if finite_rse.size else np.nan,
+                "max_rse": float(np.max(finite_rse)) if finite_rse.size else np.nan,
+                "feature_statistic_count": int(finite_rse.size),
+                "repeats_used": current_repeats,
+                "is_full_sample_size": bool(size >= total_rows),
+            }
+            curve_rows.append(curve_row)
+            curve_for_label.append(curve_row)
+
+            for statistic_index, statistic_name in enumerate(statistic_names):
+                for feature_index, feature in enumerate(feature_columns):
+                    detail_rows.append(
+                        {
+                            label_col: str(label),
+                            "total_rows": total_rows,
+                            "sample_size": int(size),
+                            "feature": str(feature),
+                            "statistic": str(statistic_name),
+                            "bootstrap_estimate": float(estimates[statistic_index, feature_index]),
+                            "bootstrap_se": float(bootstrap_se[statistic_index, feature_index]),
+                            "rse": float(rse[statistic_index, feature_index]),
+                            "denominator_was_floored": bool(
+                                denominator_was_floored[statistic_index, feature_index]
+                            ),
+                        }
+                    )
+
+        p90_values = [float(row["p90_rse"]) for row in curve_for_label]
+        stable_size = _first_stable_size(p90_values, sizes, rse_threshold, consecutive_points)
+        final = curve_for_label[-1]
+        summary_rows.append(
+            {
+                label_col: str(label),
+                "total_rows": total_rows,
+                "recommended_stable_sample_size": int(stable_size) if np.isfinite(stable_size) else np.nan,
+                "stability_status": "stable" if np.isfinite(stable_size) else "not_stable_with_current_rows",
+                "rse_threshold": float(rse_threshold),
+                "consecutive_points": int(max(consecutive_points, 1)),
+                "min_sample_size_checked": int(min(sizes)),
+                "max_sample_size_checked": int(max(sizes)),
+                "final_median_rse": float(final["median_rse"]),
+                "final_p90_rse": float(final["p90_rse"]),
+                "final_max_rse": float(final["max_rse"]),
+            }
+        )
+
+    detail = pd.DataFrame(detail_rows)
+    curve = pd.DataFrame(curve_rows)
+    summary = pd.DataFrame(summary_rows)
+    if not summary.empty:
+        summary = summary.sort_values(["stability_status", "recommended_stable_sample_size", label_col])
+    return detail, curve, summary
+
+
+def estimate_feature_distribution_mmd(
+    frame: pd.DataFrame,
+    feature_columns: list[str] | tuple[str, ...],
+    label_col: str = "source_label",
+    sample_sizes: list[int] | tuple[int, ...] | None = None,
+    repeats: int = 100,
+    min_samples: int = 5,
+    rff_components: int = 512,
+    mmd_threshold: float = 0.05,
+    consecutive_points: int = 2,
+    max_rows: int = 10000,
+    random_state: int = 42,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Estimate convergence of the joint feature distribution with Gaussian MMD.
+
+    The complete feature matrix is median-imputed and robustly scaled.  To keep the
+    high-dimensional calculation bounded, Gaussian-RBF MMD is approximated with
+    random Fourier features (RFF): ``MMD = ||mean(phi(X_n))-mean(phi(X_ref))||_2``.
+    The kernel bandwidth uses the median pairwise-distance heuristic.  If ``label_col``
+    exists, each source label receives equal weight: ``sample_size`` means rows per
+    label and each replicate draws that many rows from every label.  This prevents a
+    large FL/QJ class from hiding a small BK class.  The fixed reference is the mean
+    of the full empirical class embeddings, so the maximum sample size is not forced
+    to produce zero MMD.
+    """
+
+    if not feature_columns:
+        return (
+            pd.DataFrame(columns=[
+                "sample_size", "mmd_mean", "mmd_std", "mmd_p90", "repeats_used",
+                "reference_rows", "rff_components", "rbf_gamma", "is_full_sample_size",
+            ]),
+            pd.DataFrame(columns=[
+                "recommended_stable_sample_size", "stability_status", "mmd_threshold",
+                "consecutive_points", "reference_rows", "rff_components", "rbf_gamma",
+            ]),
+        )
+
+    x_frame = impute_with_median(numeric_feature_frame(frame, feature_columns))
+    x = x_frame.to_numpy(dtype=float)
+    if x.shape[0] < 2:
+        raise ValueError("MMD convergence analysis requires at least two rows")
+
+    rng = np.random.default_rng(random_state)
+    total_rows = int(x.shape[0])
+    analysis_rows = min(total_rows, max(int(max_rows), 2))
+    labels = frame[label_col].astype(str).to_numpy() if label_col in frame.columns else None
+    if analysis_rows < total_rows:
+        if labels is None:
+            analysis_index = rng.choice(total_rows, size=analysis_rows, replace=False)
+        else:
+            unique_labels = sorted(pd.unique(labels))
+            rows_per_label = max(2, analysis_rows // max(len(unique_labels), 1))
+            selected_parts = []
+            for label in unique_labels:
+                candidates = np.flatnonzero(labels == label)
+                take = min(len(candidates), rows_per_label)
+                selected_parts.append(rng.choice(candidates, size=take, replace=False))
+            analysis_index = np.sort(np.concatenate(selected_parts))
+        x = x[analysis_index, :]
+        if labels is not None:
+            labels = labels[analysis_index]
+    x = RobustScaler(quantile_range=(25.0, 75.0)).fit_transform(x)
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+
+    bandwidth_rows = min(len(x), 512)
+    bandwidth_index = rng.choice(len(x), size=bandwidth_rows, replace=False)
+    bandwidth_sample = x[bandwidth_index, :]
+    squared_norm = np.sum(np.square(bandwidth_sample), axis=1)
+    squared_distances = squared_norm[:, None] + squared_norm[None, :] - 2.0 * bandwidth_sample @ bandwidth_sample.T
+    upper = squared_distances[np.triu_indices(bandwidth_rows, k=1)]
+    upper = upper[np.isfinite(upper) & (upper > 0.0)]
+    median_squared_distance = float(np.median(upper)) if upper.size else 1.0
+    gamma = 1.0 / max(2.0 * median_squared_distance, np.finfo(float).eps)
+
+    components = max(int(rff_components), 32)
+    weights = rng.normal(0.0, np.sqrt(2.0 * gamma), size=(x.shape[1], components))
+    offsets = rng.uniform(0.0, 2.0 * np.pi, size=components)
+    phi = np.sqrt(2.0 / components) * np.cos(x @ weights + offsets)
+    if labels is None:
+        group_indices = {"all": np.arange(len(phi), dtype=int)}
+    else:
+        group_indices = {
+            str(label): np.flatnonzero(labels == label)
+            for label in sorted(pd.unique(labels))
+            if np.any(labels == label)
+        }
+    reference_embedding = np.mean(
+        np.stack([np.mean(phi[index, :], axis=0) for index in group_indices.values()], axis=0),
+        axis=0,
+    )
+
+    max_size_per_label = min(len(index) for index in group_indices.values())
+    configured_sizes = (
+        list(sample_sizes)
+        if sample_sizes is not None
+        else _default_sample_sizes(max_size_per_label, min_samples)
+    )
+    sizes = sorted({int(n) for n in configured_sizes if 2 <= int(n) <= max_size_per_label})
+    if not sizes:
+        sizes = [max_size_per_label]
+    elif max_size_per_label not in sizes:
+        sizes.append(max_size_per_label)
+
+    rows: list[dict[str, object]] = []
+    for size in sizes:
+        current_repeats = max(int(repeats), 2)
+        mmd_values = np.empty(current_repeats, dtype=float)
+        for rep in range(current_repeats):
+            sampled_embeddings = [
+                np.mean(phi[rng.choice(index, size=size, replace=True), :], axis=0)
+                for index in group_indices.values()
+            ]
+            delta = np.mean(np.stack(sampled_embeddings, axis=0), axis=0) - reference_embedding
+            mmd_values[rep] = float(np.linalg.norm(delta))
+        rows.append(
+            {
+                "sample_size": int(size),
+                "sample_size_per_label": int(size),
+                "bootstrap_rows_total": int(size * len(group_indices)),
+                "mmd_mean": float(np.mean(mmd_values)),
+                "mmd_std": float(np.std(mmd_values, ddof=1)),
+                "mmd_p90": float(np.percentile(mmd_values, 90)),
+                "repeats_used": current_repeats,
+                "reference_rows": int(len(x)),
+                "source_label_count": int(len(group_indices)),
+                "original_total_rows": total_rows,
+                "rff_components": components,
+                "rbf_gamma": gamma,
+                "is_full_sample_size": bool(size >= max_size_per_label),
+            }
+        )
+
+    curve = pd.DataFrame(rows)
+    stable_size = _first_stable_size(curve["mmd_p90"].tolist(), sizes, mmd_threshold, consecutive_points)
+    summary = pd.DataFrame(
+        [
+            {
+                "recommended_stable_sample_size": int(stable_size) if np.isfinite(stable_size) else np.nan,
+                "stability_status": "converged" if np.isfinite(stable_size) else "not_converged_with_current_rows",
+                "mmd_threshold": float(mmd_threshold),
+                "consecutive_points": int(max(consecutive_points, 1)),
+                "reference_rows": int(len(x)),
+                "original_total_rows": total_rows,
+                "source_label_count": int(len(group_indices)),
+                "max_sample_size_per_label": int(max_size_per_label),
+                "rff_components": components,
+                "rbf_gamma": gamma,
+                "final_mmd_mean": float(curve.iloc[-1]["mmd_mean"]),
+                "final_mmd_p90": float(curve.iloc[-1]["mmd_p90"]),
+            }
+        ]
+    )
+    return curve, summary
+
+
+def plot_bootstrap_rse_curves(curve: pd.DataFrame, output_path: Path, label_col: str = "source_label") -> None:
+    """Plot median/P90/maximum feature-statistic RSE against sample size."""
+
+    if curve.empty or label_col not in curve.columns:
+        return
+    _configure_font()
+    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.2), sharex=False)
+    for ax, metric, title in zip(
+        axes,
+        ["median_rse", "p90_rse", "max_rse"],
+        ["Median RSE", "P90 RSE", "最大 RSE"],
+    ):
+        for label, group in curve.groupby(label_col):
+            valid = group.dropna(subset=[metric]).sort_values("sample_size")
+            ax.plot(valid["sample_size"], valid[metric], marker="o", linewidth=1.3, markersize=3.2, label=str(label))
+        ax.set_xscale("log")
+        ax.set_xlabel("样本量 n", fontsize=AXIS_FONT_SIZE)
+        ax.set_ylabel(metric, fontsize=AXIS_FONT_SIZE)
+        ax.set_title(title, fontsize=TITLE_FONT_SIZE)
+        ax.grid(True, alpha=0.25)
+        ax.tick_params(labelsize=TICK_FONT_SIZE)
+    axes[0].legend(title="来源类别", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
+    fig.suptitle("Bootstrap 统计特征稳定性", fontsize=TITLE_FONT_SIZE)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_mmd_convergence_curve(curve: pd.DataFrame, output_path: Path, threshold: float | None = None) -> None:
+    """Plot mean and P90 Gaussian-MMD convergence curves."""
+
+    if curve.empty:
+        return
+    _configure_font()
+    fig, ax = plt.subplots(figsize=(7.2, 4.5))
+    ordered = curve.sort_values("sample_size")
+    ax.plot(ordered["sample_size"], ordered["mmd_mean"], marker="o", label="MMD均值")
+    ax.plot(ordered["sample_size"], ordered["mmd_p90"], marker="s", label="MMD P90")
+    if threshold is not None:
+        ax.axhline(float(threshold), color="tab:red", linestyle="--", linewidth=1.2, label="收敛阈值")
+    ax.set_xscale("log")
+    ax.set_xlabel("样本量 n", fontsize=AXIS_FONT_SIZE)
+    ax.set_ylabel("Gaussian-RBF MMD（RFF近似）", fontsize=AXIS_FONT_SIZE)
+    ax.set_title("整体特征空间分布收敛", fontsize=TITLE_FONT_SIZE)
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=TICK_FONT_SIZE)
+    ax.tick_params(labelsize=TICK_FONT_SIZE)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def estimate_source_feature_stability(
     frame: pd.DataFrame,
     feature_columns: list[str] | tuple[str, ...],
@@ -331,13 +695,16 @@ def estimate_source_feature_stability(
     reordering other labels cannot change a label's curve.
 
     At each sample size, two independent bootstrap mean vectors are compared with
-    the standardized RMS gap::
+    the label-local relative RMS gap::
 
-        sqrt(mean(((mean_a - mean_b) / within_label_std) ** 2))
+        sqrt(mean(((mean_a - mean_b) / within_label_feature_rms) ** 2))
 
-    The metric is translation invariant and is expressed in units of the label's
-    within-class feature standard deviation. Both the mean and P90 of repeated
-    bootstrap gaps are reported; the conservative P90 drives the stability decision.
+    The feature RMS is ``sqrt(mean(x ** 2))`` over the current label. Unlike z-score
+    scaling, this keeps each feature's within-label variation relative to its typical
+    signal magnitude, so labels are not forced onto the same theoretical curve. The
+    metric is invariant to feature-unit rescaling and to the presence of other labels.
+    Both the mean and P90 of repeated bootstrap gaps are reported; the conservative
+    P90 drives the stability decision.
 
     ``sample_sizes_by_label`` overrides the shared/default grid for selected labels,
     allowing small groups to use every integer while large groups keep sparse points.
@@ -352,8 +719,8 @@ def estimate_source_feature_stability(
             label_col,
             "total_rows",
             "sample_size",
-            "paired_bootstrap_standardized_rms_gap_mean",
-            "paired_bootstrap_standardized_rms_gap_p90",
+            "paired_bootstrap_relative_rms_gap_mean",
+            "paired_bootstrap_relative_rms_gap_p90",
             "repeats_used",
             "is_full_sample_size",
         ]
@@ -375,8 +742,13 @@ def estimate_source_feature_stability(
         label_mask = labels.eq(label).to_numpy()
         group_frame = impute_with_median(numeric_feature_frame(frame.loc[label_mask, :], feature_columns))
         raw_group = group_frame.to_numpy(dtype=float)
-        scaler = StandardScaler().fit(raw_group)
-        group = scaler.transform(raw_group)
+        feature_rms = np.sqrt(np.mean(np.square(raw_group), axis=0))
+        group = np.divide(
+            raw_group,
+            feature_rms,
+            out=np.zeros_like(raw_group),
+            where=np.isfinite(feature_rms) & (feature_rms > 0.0),
+        )
         total_rows = int(group.shape[0])
         if total_rows == 0:
             continue
@@ -417,8 +789,8 @@ def estimate_source_feature_stability(
                     label_col: label,
                     "total_rows": total_rows,
                     "sample_size": int(size),
-                    "paired_bootstrap_standardized_rms_gap_mean": pairwise_mean_gaps[size],
-                    "paired_bootstrap_standardized_rms_gap_p90": pairwise_p90_gaps[size],
+                    "paired_bootstrap_relative_rms_gap_mean": pairwise_mean_gaps[size],
+                    "paired_bootstrap_relative_rms_gap_p90": pairwise_p90_gaps[size],
                     "repeats_used": repeats_used[size],
                     "is_full_sample_size": bool(size >= total_rows),
                 }
@@ -440,7 +812,7 @@ def estimate_source_feature_stability(
                 "consecutive_points": int(max(consecutive_points, 1)),
                 "min_sample_size_checked": int(min(sizes)),
                 "max_sample_size_checked": int(max(sizes)),
-                "final_paired_bootstrap_standardized_rms_gap_p90": pairwise_p90_gaps[sizes[-1]],
+                "final_paired_bootstrap_relative_rms_gap_p90": pairwise_p90_gaps[sizes[-1]],
             }
         )
 
@@ -463,8 +835,8 @@ def plot_source_feature_stability_curves(
     _configure_font()
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.2), sharex=False)
     metrics = [
-        ("paired_bootstrap_standardized_rms_gap_mean", "双Bootstrap标准化均值差异"),
-        ("paired_bootstrap_standardized_rms_gap_p90", "双Bootstrap标准化均值差异P90"),
+        ("paired_bootstrap_relative_rms_gap_mean", "双Bootstrap相对均值差异"),
+        ("paired_bootstrap_relative_rms_gap_p90", "双Bootstrap相对均值差异P90"),
     ]
     for ax, (metric, title) in zip(axes, metrics):
         for label, grp in curve.groupby(label_col):
@@ -474,7 +846,7 @@ def plot_source_feature_stability_curves(
             ax.plot(valid["sample_size"], valid[metric], marker="o", linewidth=1.4, markersize=3.5, label=str(label))
         ax.set_xscale("log")
         ax.set_xlabel("样本量 n", fontsize=AXIS_FONT_SIZE)
-        ax.set_ylabel("类内标准化RMS误差", fontsize=AXIS_FONT_SIZE)
+        ax.set_ylabel("类内相对RMS误差", fontsize=AXIS_FONT_SIZE)
         ax.set_title(title, fontsize=TITLE_FONT_SIZE)
         ax.grid(True, alpha=0.25)
         ax.tick_params(labelsize=TICK_FONT_SIZE)
