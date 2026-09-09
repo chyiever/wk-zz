@@ -735,11 +735,12 @@ def plot_bootstrap_rse_curves(
     threshold: float | None = None,
     label_col: str = "source_label",
 ) -> None:
-    """Plot P90 RSE for all five statistics plus their aggregate.
+    """Plot median and P90 RSE for all five statistics plus their aggregate.
 
-    Each statistic-specific ordinate is the 90th percentile across feature-level
-    RSE values for one source label and sample size.  The sixth panel uses the P90
-    across all five statistics and all features, matching the stability decision.
+    Each statistic-specific ordinate summarizes feature-level RSE values for one
+    source label and sample size.  Dashed curves show the median (typical feature),
+    while solid curves show P90 (90% feature coverage).  The sixth panel aggregates
+    all five statistics and all features; its P90 still drives the stability decision.
     """
 
     if curve.empty or label_col not in curve.columns:
@@ -760,19 +761,37 @@ def plot_bootstrap_rse_curves(
     fig, axes = plt.subplots(2, 3, figsize=(15.6, 8.6), sharex=False, sharey=False)
     flat_axes = axes.ravel()
 
+    labels = sorted(curve[label_col].dropna().astype(str).unique())
+    color_cycle = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["tab:blue"])
+    label_colors = {label: color_cycle[index % len(color_cycle)] for index, label in enumerate(labels)}
+
+    def _plot_two_summaries(ax: plt.Axes, data: pd.DataFrame) -> None:
+        for label, group in data.groupby(label_col):
+            label_text = str(label)
+            ordered = group.sort_values("sample_size")
+            for column, linestyle, marker in (
+                ("median_rse", "--", None),
+                ("p90_rse", "-", "o"),
+            ):
+                values = pd.to_numeric(ordered[column], errors="coerce")
+                valid = values.gt(0) & np.isfinite(values)
+                ax.plot(
+                    ordered.loc[valid, "sample_size"],
+                    values.loc[valid],
+                    color=label_colors.get(label_text),
+                    linestyle=linestyle,
+                    marker=marker,
+                    linewidth=1.35,
+                    markersize=3.0,
+                )
+
     for ax, (statistic, title) in zip(flat_axes[:5], statistic_specs):
         selected = statistic_curve.loc[statistic_curve.get("statistic", pd.Series(dtype=str)).eq(statistic)]
-        for label, group in selected.groupby(label_col):
-            valid = group.loc[pd.to_numeric(group["p90_rse"], errors="coerce").gt(0)].sort_values("sample_size")
-            ax.plot(valid["sample_size"], valid["p90_rse"], marker="o", linewidth=1.3, markersize=3.2, label=str(label))
+        _plot_two_summaries(ax, selected)
         ax.set_title(title, fontsize=TITLE_FONT_SIZE)
 
     aggregate_ax = flat_axes[5]
-    for label, group in curve.groupby(label_col):
-        valid = group.loc[pd.to_numeric(group["p90_rse"], errors="coerce").gt(0)].sort_values("sample_size")
-        aggregate_ax.plot(
-            valid["sample_size"], valid["p90_rse"], marker="o", linewidth=1.3, markersize=3.2, label=str(label)
-        )
+    _plot_two_summaries(aggregate_ax, curve)
     aggregate_ax.set_title("总体：全部特征 × 五种统计量", fontsize=TITLE_FONT_SIZE)
 
     for ax in flat_axes:
@@ -785,12 +804,36 @@ def plot_bootstrap_rse_curves(
         ax.set_yscale("log")
         ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
         ax.set_xlabel("每类独立样本量 n", fontsize=AXIS_FONT_SIZE)
-        ax.set_ylabel("跨特征 P90 RSE（无量纲）", fontsize=AXIS_FONT_SIZE)
+        ax.set_ylabel("跨特征 RSE 汇总（无量纲）", fontsize=AXIS_FONT_SIZE)
         ax.grid(True, which="both", alpha=0.22)
         ax.tick_params(labelsize=TICK_FONT_SIZE)
-    flat_axes[0].legend(title="来源类别", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE, ncol=2)
-    fig.suptitle("Bootstrap 统计特征稳定性：五种统计量分别评估", fontsize=TITLE_FONT_SIZE)
-    fig.tight_layout()
+    from matplotlib.lines import Line2D
+
+    source_handles = [
+        Line2D([0], [0], color=label_colors[label], linewidth=1.6, label=label)
+        for label in labels
+    ]
+    metric_handles = [
+        Line2D([0], [0], color="0.25", linestyle="--", linewidth=1.6, label="median RSE（典型特征）"),
+        Line2D([0], [0], color="0.25", linestyle="-", marker="o", markersize=3.2,
+               linewidth=1.6, label="P90 RSE（90%特征覆盖）"),
+    ]
+    if threshold is not None and float(threshold) > 0:
+        metric_handles.append(
+            Line2D([0], [0], color="tab:red", linestyle="--", linewidth=1.15,
+                   label=f"P90 判稳阈值 {float(threshold):.0%}")
+        )
+    fig.legend(
+        handles=source_handles, title="来源类别", fontsize=TICK_FONT_SIZE,
+        title_fontsize=AXIS_FONT_SIZE, ncol=max(len(source_handles), 1),
+        loc="upper center", bbox_to_anchor=(0.5, 0.955),
+    )
+    fig.legend(
+        handles=metric_handles, fontsize=TICK_FONT_SIZE, ncol=len(metric_handles),
+        loc="upper center", bbox_to_anchor=(0.5, 0.91),
+    )
+    fig.suptitle("Bootstrap 统计特征稳定性：median 与 P90 RSE", fontsize=TITLE_FONT_SIZE, y=0.995)
+    fig.tight_layout(rect=(0, 0, 1, 0.86))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
