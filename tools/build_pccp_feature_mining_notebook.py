@@ -221,6 +221,7 @@ from pccp_feature_mining.distribution_analysis import (
     estimate_feature_distribution_mmd,
     plot_bootstrap_rse_curves,
     plot_mmd_convergence_curve,
+    summarize_bootstrap_rse_by_statistic,
     select_distribution_features,
     run_pca_projection,
     run_umap_projection,
@@ -267,6 +268,10 @@ if not umap_projection.empty:
 ### 2.7.1 统计特征稳定性：Bootstrap RSE
 
 BK 每个物理事件仅保留 0-30 ms 窗口，FL/QJ 使用原始样本。对每个来源类别和样本量重复 Bootstrap；每个特征计算 mean、std、Q10、Q50、Q90，再以 `RSE = Bootstrap标准误 / |Bootstrap估计均值|` 计算相对标准误。汇总全部“特征 × 统计量”的 median RSE、P90 RSE 与最大 RSE；默认 P90 RSE 连续两个点不高于 10% 时判定稳定。
+
+图 19 分成六个面板：mean、std、Q10、Q50、Q90 各一个面板，纵轴均为该统计量在全部特征上的 P90 RSE；最后一个面板是全部“特征 × 五种统计量”的总体 P90 RSE。纵轴是无量纲相对抽样不确定性，不是特征幅值或能量。mean 表示中心水平稳定性，std 表示独立事件间离散程度稳定性，Q10/Q90 分别表示下尾/上尾覆盖稳定性，Q50 表示典型事件水平稳定性。
+
+10% 是本项目偏严格的工程目标，不是 Bootstrap 理论给出的统一常数。近似正态时 95% 相对置信半宽约为 `1.96 × RSE`，所以 RSE=10% 对应约 ±19.6%；若要求 95% 半宽不超过估计值的 10%，应使用约 5.1%。建议 ≤5% 视为高精度、5%-10% 视为工程稳定、10%-20% 仅作探索、≥30% 作为强不稳定警示；接近零的统计量应改看绝对标准误或置信区间。依据包括 Efron (1979, DOI: 10.1214/aos/1176344552)、CDC/NCHS RSE 定义与近零警告、Statistics Canada 按具体产品采用不同 CV 界限，以及 Jonsson & Nyberg (2022, DOI: 10.1002/psp4.12790) 对尾部分位数精度和 Bootstrap 样本数的讨论。
 """
         )
     )
@@ -296,8 +301,15 @@ write_csv(bk_0_30ms_selection_audit, RUN_DIR / 'sample_sufficiency_bk_0_30ms_aud
 write_csv(bootstrap_statistic_detail, RUN_DIR / 'bootstrap_statistic_stability_detail.csv')
 write_csv(bootstrap_statistic_curve, RUN_DIR / 'bootstrap_statistic_stability_curve.csv')
 write_csv(bootstrap_statistic_summary, RUN_DIR / 'bootstrap_statistic_stability_summary.csv')
+bootstrap_statistic_by_measure = summarize_bootstrap_rse_by_statistic(bootstrap_statistic_detail)
+write_csv(bootstrap_statistic_by_measure, RUN_DIR / 'bootstrap_statistic_stability_by_statistic.csv')
 bootstrap_rse_plot_path = RUN_DIR / 'plots/bootstrap_statistic_rse_curves.png'
-plot_bootstrap_rse_curves(bootstrap_statistic_curve, bootstrap_rse_plot_path)
+plot_bootstrap_rse_curves(
+    bootstrap_statistic_curve,
+    bootstrap_rse_plot_path,
+    statistic_curve=bootstrap_statistic_by_measure,
+    threshold=RSE_STABILITY_THRESHOLD,
+)
 
 sample_stability_parameter_table = pd.DataFrame([
     {'参数': 'Bootstrap repeats', '当前值': max(int(CONFIG.sample_stability_repeats), 200), '含义': '每个类别、每个样本量重复次数'},

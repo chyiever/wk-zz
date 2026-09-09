@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -293,6 +294,56 @@ def _default_sample_sizes(total_rows: int, min_samples: int = 5) -> list[int]:
     return sizes
 
 
+def build_sample_size_grid(
+    total_rows: int,
+    min_samples: int = 5,
+    dense_until: int = 20,
+    growth: float = 1.3,
+    max_points: int = 32,
+) -> list[int]:
+    """Design a resolution-matched sample-size grid for stability curves.
+
+    Bootstrap RSE of a statistic decays roughly like ``n ** -0.5``, so grid
+    points should be spaced so that the expected RSE changes by a similar
+    relative amount between neighbours:
+
+    * while ``n <= dense_until`` every integer is kept (one extra sample still
+      moves ``1/sqrt(n)`` by a visible amount, and the "consecutive points"
+      stability rule needs adjacent integers there);
+    * above that, sizes grow geometrically with ratio ``growth`` (>= 1.05);
+    * the full sample size is always the last point, and geometric points
+      within one growth step of it are pruned as redundant;
+    * the geometric region is additionally coarsened if it would exceed
+      ``max_points`` grid points in total.
+    """
+
+    if total_rows < 2:
+        return []
+    growth = max(float(growth), 1.05)
+    start = max(2, min(int(min_samples), int(total_rows)))
+    dense_until = min(max(int(dense_until), start), int(total_rows))
+
+    dense = list(range(start, dense_until + 1))
+    if int(total_rows) <= dense_until:
+        return dense
+
+    last_dense = dense[-1] if dense else start - 1
+    room = max(int(max_points) - len(dense) - 1, 1)
+    ratio = max(growth, (int(total_rows) / max(last_dense, 1)) ** (1.0 / room))
+
+    geometric: list[int] = []
+    current = float(last_dense)
+    while True:
+        current = math.ceil(current * ratio)
+        if current >= int(total_rows):
+            break
+        geometric.append(int(current))
+    geometric = [n for n in geometric if n < int(total_rows) / ratio]
+
+    sizes = sorted(set(dense + geometric + [int(total_rows)]))
+    return sizes
+
+
 def _first_stable_size(
     values: list[float],
     sizes: list[int],
@@ -375,7 +426,7 @@ def estimate_bootstrap_statistic_stability(
 
         label_sample_sizes = None if sample_sizes_by_label is None else sample_sizes_by_label.get(str(label))
         configured_sizes = label_sample_sizes if label_sample_sizes is not None else sample_sizes
-        sizes = list(configured_sizes) if configured_sizes is not None else _default_sample_sizes(total_rows, min_samples)
+        sizes = list(configured_sizes) if configured_sizes is not None else build_sample_size_grid(total_rows, min_samples)
         sizes = sorted({int(n) for n in sizes if 2 <= int(n) <= total_rows})
         if not sizes:
             continue
@@ -561,7 +612,7 @@ def estimate_feature_distribution_mmd(
     configured_sizes = (
         list(sample_sizes)
         if sample_sizes is not None
-        else _default_sample_sizes(max_size_per_label, min_samples)
+        else build_sample_size_grid(max_size_per_label, min_samples)
     )
     sizes = sorted({int(n) for n in configured_sizes if 2 <= int(n) <= max_size_per_label})
     if not sizes:
@@ -621,29 +672,124 @@ def estimate_feature_distribution_mmd(
     return curve, summary
 
 
-def plot_bootstrap_rse_curves(curve: pd.DataFrame, output_path: Path, label_col: str = "source_label") -> None:
-    """Plot median/P90/maximum feature-statistic RSE against sample size."""
+def summarize_bootstrap_rse_by_statistic(
+    detail: pd.DataFrame,
+    label_col: str = "source_label",
+) -> pd.DataFrame:
+    """Aggregate feature-level RSE separately for mean/std/Q10/Q50/Q90."""
+
+    required = {label_col, "total_rows", "sample_size", "statistic", "rse"}
+    missing = sorted(required.difference(detail.columns))
+    if missing:
+        raise KeyError(f"Bootstrap RSE detail is missing columns: {', '.join(missing)}")
+    if detail.empty:
+        return pd.DataFrame(
+            columns=[
+                label_col,
+                "total_rows",
+                "sample_size",
+                "statistic",
+                "median_rse",
+                "p90_rse",
+                "max_rse",
+                "feature_count",
+                "floored_denominator_count",
+            ]
+        )
+
+    work = detail.copy()
+    work["rse"] = pd.to_numeric(work["rse"], errors="coerce")
+    work = work.loc[np.isfinite(work["rse"].to_numpy(dtype=float))].copy()
+    group_columns = [label_col, "total_rows", "sample_size", "statistic"]
+    summary = (
+        work.groupby(group_columns, sort=True, dropna=False)["rse"]
+        .agg(
+            median_rse="median",
+            p90_rse=lambda values: float(np.percentile(values, 90)),
+            max_rse="max",
+            feature_count="size",
+        )
+        .reset_index()
+    )
+    if "denominator_was_floored" in work.columns:
+        floored = (
+            work.assign(_floored=work["denominator_was_floored"].fillna(False).astype(bool).astype(int))
+            .groupby(group_columns, sort=True, dropna=False)["_floored"]
+            .sum()
+            .rename("floored_denominator_count")
+            .reset_index()
+        )
+        summary = summary.merge(floored, on=group_columns, how="left")
+    else:
+        summary["floored_denominator_count"] = 0
+    summary["floored_denominator_fraction"] = (
+        summary["floored_denominator_count"] / summary["feature_count"].clip(lower=1)
+    )
+    return summary
+
+
+def plot_bootstrap_rse_curves(
+    curve: pd.DataFrame,
+    output_path: Path,
+    statistic_curve: pd.DataFrame | None = None,
+    threshold: float | None = None,
+    label_col: str = "source_label",
+) -> None:
+    """Plot P90 RSE for all five statistics plus their aggregate.
+
+    Each statistic-specific ordinate is the 90th percentile across feature-level
+    RSE values for one source label and sample size.  The sixth panel uses the P90
+    across all five statistics and all features, matching the stability decision.
+    """
 
     if curve.empty or label_col not in curve.columns:
         return
+    if statistic_curve is None or statistic_curve.empty:
+        statistic_curve = pd.DataFrame()
+
+    from matplotlib.ticker import PercentFormatter
+
     _configure_font()
-    fig, axes = plt.subplots(1, 3, figsize=(15.0, 4.2), sharex=False)
-    for ax, metric, title in zip(
-        axes,
-        ["median_rse", "p90_rse", "max_rse"],
-        ["Median RSE", "P90 RSE", "最大 RSE"],
-    ):
-        for label, group in curve.groupby(label_col):
-            valid = group.dropna(subset=[metric]).sort_values("sample_size")
-            ax.plot(valid["sample_size"], valid[metric], marker="o", linewidth=1.3, markersize=3.2, label=str(label))
-        ax.set_xscale("log")
-        ax.set_xlabel("样本量 n", fontsize=AXIS_FONT_SIZE)
-        ax.set_ylabel(metric, fontsize=AXIS_FONT_SIZE)
+    statistic_specs = [
+        ("mean", "均值 mean：中心水平"),
+        ("std", "标准差 std：离散程度"),
+        ("q10", "Q10：分布下尾"),
+        ("q50", "Q50：中位典型水平"),
+        ("q90", "Q90：分布上尾"),
+    ]
+    fig, axes = plt.subplots(2, 3, figsize=(15.6, 8.6), sharex=False, sharey=False)
+    flat_axes = axes.ravel()
+
+    for ax, (statistic, title) in zip(flat_axes[:5], statistic_specs):
+        selected = statistic_curve.loc[statistic_curve.get("statistic", pd.Series(dtype=str)).eq(statistic)]
+        for label, group in selected.groupby(label_col):
+            valid = group.loc[pd.to_numeric(group["p90_rse"], errors="coerce").gt(0)].sort_values("sample_size")
+            ax.plot(valid["sample_size"], valid["p90_rse"], marker="o", linewidth=1.3, markersize=3.2, label=str(label))
         ax.set_title(title, fontsize=TITLE_FONT_SIZE)
-        ax.grid(True, alpha=0.25)
+
+    aggregate_ax = flat_axes[5]
+    for label, group in curve.groupby(label_col):
+        valid = group.loc[pd.to_numeric(group["p90_rse"], errors="coerce").gt(0)].sort_values("sample_size")
+        aggregate_ax.plot(
+            valid["sample_size"], valid["p90_rse"], marker="o", linewidth=1.3, markersize=3.2, label=str(label)
+        )
+    aggregate_ax.set_title("总体：全部特征 × 五种统计量", fontsize=TITLE_FONT_SIZE)
+
+    for ax in flat_axes:
+        if threshold is not None and float(threshold) > 0:
+            ax.axhline(
+                float(threshold), color="tab:red", linestyle="--", linewidth=1.15,
+                label=f"阈值 {float(threshold):.0%}",
+            )
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0, decimals=0))
+        ax.set_xlabel("每类独立样本量 n", fontsize=AXIS_FONT_SIZE)
+        ax.set_ylabel("跨特征 P90 RSE（无量纲）", fontsize=AXIS_FONT_SIZE)
+        ax.grid(True, which="both", alpha=0.22)
         ax.tick_params(labelsize=TICK_FONT_SIZE)
-    axes[0].legend(title="来源类别", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE)
-    fig.suptitle("Bootstrap 统计特征稳定性", fontsize=TITLE_FONT_SIZE)
+    flat_axes[0].legend(title="来源类别", fontsize=TICK_FONT_SIZE, title_fontsize=AXIS_FONT_SIZE, ncol=2)
+    fig.suptitle("Bootstrap 统计特征稳定性：五种统计量分别评估", fontsize=TITLE_FONT_SIZE)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=180, bbox_inches="tight")

@@ -1354,3 +1354,45 @@
   - 输出 MMD 均值、标准差、P90；默认以 MMD P90 不高于 0.05 且连续两个点满足为整体特征空间收敛。
   - 新增输出：`feature_distribution_mmd_curve.csv`、`feature_distribution_mmd_summary.csv`、`plots/feature_distribution_mmd_convergence.png`。
 - 实现位置：`src/pccp_feature_mining/distribution_analysis.py` 新增统计稳定性、RFF-MMD 及两类绘图函数；`tools/build_pccp_feature_mining_notebook.py` 同步更新，防止重新生成 Notebook 时丢失 2.7 新逻辑。
+
+## 2026-09-10（补充）图 19 五种统计量分面与 RSE 阈值说明
+
+- 复核发现原图 19 虽然使用了 `mean/std/Q10/Q50/Q90` 的全部 RSE，但只绘制跨全部“特征 × 统计量”汇总后的 `median_rse/p90_rse/max_rse`，无法定位具体是哪一种统计量未收敛。
+- 新图 19 改为 2×3 六面板：`mean`、`std`、`Q10`、`Q50`、`Q90` 分别绘制跨特征 P90 RSE，第六面板保留全部特征与五种统计量合并后的总体 P90 RSE。
+- 所有面板增加 10% 红色阈值线，横轴为每类独立样本量，纵轴为无量纲的跨特征 P90 RSE，并使用对数纵轴同时展示阈值附近与高 RSE 区域。
+- 新增 `summarize_bootstrap_rse_by_statistic()`，输出 `bootstrap_statistic_stability_by_statistic.csv`，包含每类、每个样本量、每种统计量的 median/P90/max RSE、特征数和近零分母数量/比例。
+- 统计稳定性与 MMD 的默认样本量网格接入 `build_sample_size_grid()`：小样本区逐整数、较大样本区按几何间隔增长，并始终保留全量点，兼顾阈值附近分辨率与运行时间。
+- Notebook 正文补充五个统计量纵轴的统计与物理解释：均值对应中心响应，标准差对应独立事件间离散性，Q10/Q90 对应分布下尾/上尾，Q50 对应典型事件水平；总体面板作为统一样本充分性判据。
+- 阈值口径修正：10% 明确标注为本项目偏严格的工程阈值，不是 Bootstrap 理论常数。近似正态下 95% 相对置信半宽约为 `1.96 × RSE`，因此 10% RSE 对应约 ±19.6%；若业务要求 95% 半宽不超过估计值的 10%，RSE 阈值应约为 5.1%。
+- 文献依据补充 Efron (1979)、CDC/NCHS RSE 定义与近零估计警告、Statistics Canada 不同应用的 CV 质量界限，以及 Jonsson & Nyberg (2022) 对分位数精度与 Bootstrap 重复数的研究。
+
+## 2026-09-10（特征一致性核对落地）：修订特征计算公式并同步文档
+
+- 本次更新范围：`src/fea_cpt_gpu_v2_2/features.py`、`src/fea_cpt_gpu_v2_2/base.py`、`src/fea_cpt_gpu_v2_2/params.py`、`src/pccp_feature_mining/feature_schema.py`、`notebooks/DATA09_v0-flow_feature_extraction.ipynb`、`notebooks/DATA09_v0-qj_sample_label_normalization.ipynb`、`docs/PCCP特征字典.md`、`docs/chatgpt-特征汇总.md`、`docs/dev.md`、`.gitignore`。
+- 任务背景：
+  - `docs/特征一致性核对报告.md`（2026-09-07）核对了两份特征文档与 `fea_cpt_gpu_v2_2` 代码实现，给出 A 类“改代码”清单（约 10 项）与 B 类“改文档”清单。
+  - 两个 DATA09 notebook 均通过 `fea_cpt_gpu_v2_2` 滑窗流水线计算特征，故代码修改落地在共享模块 `src/fea_cpt_gpu_v2_2/`；notebook 只做说明同步。
+- 程序更新日志（`src/fea_cpt_gpu_v2_2/features.py`，同时新增 `base.py`/`params.py` 两个参数：`ridge_valid_energy_ratio=0.2`、`ridge_fixed_band_hz=1000`）：
+  - `T_half_high`：明确为峰后衰减时长（峰值起算），峰后从未跌破 50% 时返回 `NaN`（原来返回 0.0）。
+  - `rho_r`/`H2_ratio`/`epsilon_2x`/`C_h`/`rho_up`/`rho_down`：新增帧有效性判据（主带帧能量 > 0.2×帧能量中位数），消除 DP 脊线“只要有数据必返回正频率”导致 `rho_r` 恒为 1 的退化；`Delta_f_span`/`C_f` 也仅在有效帧上统计。
+  - `G_gap`：判据由“卡同一频点（|Δf₁|<1e-12）”改为“脊线丢失帧 或 有效脊线跳变>2×频率分辨率”。
+  - `N_turn`：先剔除零斜率样本再统计 sign 变化，避免 `+→0→−` 重复计数。
+  - `beta_H`/`alpha_hat`：由全窗对数拟合改为“峰值→事件终点”峰后窗拟合，避免上升段污染衰减斜率。
+  - `F_peak`：由“先求和后取正”改为“逐频点正增量（半波整流）后求和”，首帧通量置 0。
+  - `SK_max`：改用经典谱峭度估计器 `<|X|^4>/<|X|^2>^2-2`（Antoni，高斯过程→0）。
+  - `R_2_1`/`H_stack`：脊线单 bin 改为 ±相对带宽（Δf=max(2bin,0.08f₁)）带内积分；`R_h` 改为 f1/f2 固定 ±1 kHz 邻域带积分（超出频率轴范围的帧跳过），与 `R_2_1` 形成互补而非重复。
+  - `Ridge_coh`：保留为 `R_harm` 的同值别名列并在代码注释中标注“已停用”，避免破坏下游列名。
+  - `D_WPT`：HF/LF 节点集合改按“子带中心频率 > 主带几何中点”划分，而非节点序对半分。
+  - `R_fb`：峰值样本不再重复计入后段（`after_energy` 从 `peak_idx+1` 起算）。
+  - `feature_schema.py`：按字典修正 `S_env`/`R_td`/`H_alpha`/`rho_r`/`G_gap`/`H2_ratio`/`R_h` 及 `eta_bw`/`C_f`/`F_peak`/`I_burst`/`Q_MP`/`eta_dict`/`SK_max`/`T_half_high`/`Ridge_coh`/`N_turn` 等中文含义。
+- 文档更新日志：
+  - `docs/PCCP特征字典.md`：模块路径更正为 `fea_cpt_gpu_v2_2`；条目说明（64 静态 + 16 节点）；`eta_bw` 改名“包络左右宽度比”；`beta_H`/`alpha_hat` 峰后拟合区间；`rho_r`/`G_gap`/`N_turn` 判据；`R_2_1`/`H_stack`/`R_h` 积分口径；`Ridge_coh` 别名停用标注；`C_f` 归一化公式；`SK_max` 经典估计器；`T_half_high` NaN；`I_burst` 改名“小波包子带能量集中度”；`D_WPT` 节点划分；`Q_MP` 改述“Hankel 低秩重建质量”；`eta_dict` 改述“损伤分量波形占比”；补充动态子带规则与无偏/分位口径说明；文末新增“修订记录”。
+  - `docs/chatgpt-特征汇总.md`：`R_fb` 事件窗边界；`H_stack` 分母 `S(t,f)`→`P(t,f)`；`K_loc` 改名“全局峭度”；`C_f` 归一化分母；`T_half_high` 时长口径与 NaN；`D_WPT` 公式改回 HF−LF；`Q_MP` 改述；`I_burst` 改名；`eta_dict` 波形 L1 口径；`rho_r`/`G_gap`/`N_turn` 判据说明；`F_peak`/`SK_max` 实现口径注明；文末新增“修订记录”。
+  - notebook：`DATA09_v0-flow_feature_extraction.ipynb` 架构说明更新（标注 2026-09-10 特征公式修订）；`DATA09_v0-qj_sample_label_normalization.ipynb` 说明区补充“本 notebook 不计算特征，特征计算由 fea_cpt_gpu_v2_2 承担”。
+- 自检记录：
+  - `python -m py_compile` 通过（features.py/base.py/params.py/feature_schema.py）；
+  - 合成信号跑通 `build_context + compute_all_features`，仍输出 80 个特征，列名与顺序不变，数值按新口径重算；
+  - 两个 notebook 用 `nbformat` 重读校验通过，仅改动说明性单元格。
+- GitHub 上传日志：
+  - 首次同步（修改前）：提交并推送 `7474388`（含核对报告、DATA09 v0 系列 notebook、字典 docx、工具脚本与 `.gitignore`，仅限 docs/notebooks/src/tools + .gitignore）。
+  - 本次修改后：再次提交并推送（见本次提交信息）。
