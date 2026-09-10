@@ -5,7 +5,7 @@
 > 已知信号先验：断丝有效频带约为 **100 Hz–60 kHz**，总体上频率越高能量越弱；环境干扰亦有相似的随频率衰减趋势。  
 > 当前数据与配置：当前 DATA09 数据记录显示采样率主要为 **1 MHz**；notebook 将目标采样率设为 1 MHz，30 ms 无重叠窗口，预处理带通为 1–95 kHz，配置 8 个分析频带，默认启用共享 STFT、CUDA 优先和 4 个窗口进程。
 
-> **整改状态说明（2026-09-10）**：以上“当前数据与配置”和正文风险描述是修复前审计快照，用于保留问题证据；本轮已经实施的代码、配置与验收状态统一记录在文末“附录 C：整改实施与验证日志”。修复后 notebook 的预处理通带为 80 Hz–65 kHz，默认分析频带为 7 个，特征 schema 为 `pccp-v3-safe-shared-20260910`。
+> **整改状态说明（2026-09-10）**：以上“当前数据与配置”和正文风险描述是修复前审计快照，用于保留问题证据；本轮已经实施的代码、配置与验收状态统一记录在文末“附录 C：整改实施与验证日志”。最新配置为先去均值、再 100 Hz 高通（预滤波上限 105 kHz），默认分析频带为 8 个，特征 schema 为 `pccp-v4-band100k-safe-shared-20260910`。
 
 ---
 
@@ -666,7 +666,7 @@ BANDS = [
 
 - 修复前工作区快照已单独提交并推送：`4d32e04`（`同步特征分析更新并新增计算风险专项审计`）。
 - 修复代码集中在 `src/fea_cpt_gpu_v2_2/`；DATA09 默认运行参数同步到 `notebooks/DATA09_v0-flow_feature_extraction.ipynb`。
-- 新输出带有 `feature_schema_version=pccp-v3-safe-shared-20260910`，并记录 `stft_backend`、`power_dtype=float64`、`harmonic_context_band`。旧共享路径产物不得与该 schema 混合训练。
+- 新输出带有 `feature_schema_version=pccp-v4-band100k-safe-shared-20260910`，并记录 `stft_backend`、`power_dtype=float64`、`harmonic_context_band`。旧共享路径产物不得与该 schema 混合训练。
 
 ### C.2 修复结果与严重程度闭环
 
@@ -678,7 +678,7 @@ BANDS = [
 | S0 阻断 | 共享宽带 STFT 被裁剪冒充带通 STFT | 对整文件先生成每个规范带通信号；逐窗使用同一 MAD 标度；将 `(band, window, sample)` 展平后集中 batch STFT，再恢复频带/窗口轴 | 已修复 |
 | S0 阻断 | 能量分子/分母跨范围 | `E_total`、`E_harm`、`E_res` 全部来自当前规范带通信号的同一 STFT 频率范围；所有功率总和和关键比值分母采用 float64 累加 | 已修复 |
 | S1 严重 | 残差双重定义 | 复谱唯一残差为 `(1-M_h)X_B`；时域唯一残差为其配对 ISTFT；`epsilon_rec` 直接使用该残差能量，不再另算 `x-ISTFT(M_hX_B)` | 已修复 |
-| S0 阻断 | 窄带内错误搜索二倍频 | 明确 `b_100_60k` 为谐波上下文；二倍频族只从此宽带输出，窄带不再生成貌似有效的 H2 列；`f1≤30 kHz`、`f2≤60 kHz` | 已修复 |
+| S0 阻断 | 窄带内错误搜索二倍频 | 明确 `b_100_100k` 为谐波上下文；二倍频族只从此宽带输出，窄带不再生成貌似有效的 H2 列；`f1≤50 kHz`、`f2≤100 kHz` | 已修复 |
 | S3 冗余 | 每频带固定 80 列 | 建立 time/spectral/ridge/harmonic/residual/background/wavelet/damped 八类 allowlist；按频带输出适用族。新 schema 默认不输出 `A_env`（由 `r_p` 线性决定）和 `Ridge_coh`（`R_harm` 同值别名） | 已修复 |
 | S1/S2 | WPT 节点映射与尺度 | WPT 前按主带上限降采样到约 `max(4 kHz, 3·f_high)`（不超过原采样率）；四层节点使用 PyWavelets `order="freq"` 的显式频率序号计算中心频率，禁止把 `a/d` 路径直接当二进制频率码 | 已修复 |
 | S1 严重 | 阻尼原子固定零时刻、零相位 | 原子改为因果起振；候选起点包含事件 onset 和残差包络峰值；每个 `(t0,f,τ)` 同时投影正弦/余弦正交子空间，匹配结果对任意相位不偏置 | 已修复 |
@@ -740,15 +740,15 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 
 | 频带 | 当前建议输出 | 用途与限制 |
 |---|---|---|
-| 100 Hz–60 kHz | time、spectral、ridge、harmonic、residual、background、wavelet、damped | 唯一全带谐波/残差/WPT/阻尼上下文；计算最重，只保留一份 |
-| 1–60 kHz | time、spectral、ridge、residual、background | 对照去除极低频后主体结构；不再重复谐波/WPT/阻尼 |
+| 100 Hz–100 kHz | time、spectral、ridge、harmonic、residual、background、wavelet、damped | 唯一全带谐波/残差/WPT/阻尼上下文；计算最重，只保留一份 |
+| 1–100 kHz | time、spectral、ridge、residual、background | 对照去除极低频后主体结构；不再重复谐波/WPT/阻尼 |
 | 100 Hz–1 kHz | time、background | 当前先保留带通信号的包络/形状和局部背景量；谱质心、谱熵、脊线必须等长窗/低采样率组实现后再启用 |
 | 1–5 kHz | time、spectral、ridge、background | 低频共振；当前频率 bin 数仍较少，解释时需标注分辨率 |
 | 5–15 kHz | time、spectral、ridge、background | 主要结构共振和主脊线候选带 |
 | 15–30 kHz | time、spectral、ridge、residual、background | 中高频瞬态及可产生 30–60 kHz 二倍频的基频候选 |
 | 30–60 kHz | time、spectral、residual、background | 弱高频冲击/衰减；必须联用 `SNR_high_db/high_observable`，不输出带内二倍频 |
 
-如后续实测消融显示需要 5–30 kHz 汇总带，可作为第 8 带增加，但不建议恢复原来的重叠窄带全集。当前预处理通带设置为 **80 Hz–65 kHz**，为目标 100 Hz–60 kHz 留过渡带；若传感器/前端 60 kHz 以上没有可信响应，应基于实测频响收紧上限，而非仅靠软件扩大通带。
+如后续实测消融显示需要 5–30 kHz 汇总带，可作为额外重叠带增加，但不建议恢复原来的重叠窄带全集。当前预处理先去均值，再采用 **100 Hz 高通**，并以 105 kHz 低通作为 100 kHz 目标通带的过渡余量；若传感器/前端 100 kHz 以上没有可信响应，应基于实测频响收紧上限，而非仅靠软件扩大通带。
 
 ### C.5 自动化验证证据
 
@@ -771,3 +771,72 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 `Q_MP` 的底层 CUDA Hankel SVD 仍可能使用 float32；本轮已把功率统计、能量和比值累加统一为 float64，但这不等于所有线性代数核都变为 float64。`Q_MP` 应继续接受 CPU float64 抽样回归和病态矩阵质量监测。
 
 历史 CSV 中以下列必须重算，不能通过列名转换修复：所有共享路径时频/脊线/谐波/残差列、WPT、阻尼原子、`epsilon_rec` 以及由旧 processed log 跳过而可能缺失的窗口。仅元数据列可迁移。
+
+---
+
+## 附录 D：关于 GPU、共享、采样率和重算的六个问题
+
+### D.1 默认关闭共享 STFT 和 CUDA，是否比默认开启更准确？
+
+不是“关闭必然更准确”，而是关闭后更容易得到可审计的 reference。精度差异来自实现口径，而不是并行这个动作本身：
+
+- 旧路径存在宽带 STFT 裁剪、CPU/GPU 混用、`float32` 累加、不同 padding/标度等问题，开启优化会把这些差异快速复制到全部窗口；
+- 修复后，Torch 的窗、hop、`n_fft`、center、padding、频谱标度和 Torch ISTFT 已配对，功率统计使用 `float64`；在相同输入上，CPU/GPU 的总功率相对差约 $9\times10^{-8}$，batch/reference 测试逐列一致；
+- 因此默认开启通常更快，且在通过验收后不应因为“GPU 天生不准”而关闭。关闭 CPU/共享仍应作为故障排查和周期性抽样基准，而不是生产常态。
+
+建议的生产策略是：GPU 主进程集中前向 STFT + worker CPU 特征计算；不让每个 worker 各自初始化 CUDA。`ENABLE_SHARED_STFT=True` 的前提是使用规范带通信号 batch，而不是复用旧的宽带频谱裁剪。
+
+### D.2 “实现多采样率分析路径”具体指什么？
+
+它不是把同一信号简单复制三次，而是为不同物理频段选择不同的抗混叠滤波、分析采样率、STFT 窗长和特征族：
+
+| 路径 | 建议有效采样率 | 时间/频率策略 | 适合特征 |
+|---|---:|---|---|
+| 100 Hz–1 kHz | 10–20 kHz | 先低通再降采样；使用 10–20 ms 长窗或整段 Welch | 带能量、谱质心、慢包络、背景 SNR |
+| 1–15 kHz | 50–100 kHz | 2–5 ms 窗，兼顾频率分辨率与事件定位 | 谱形、低/中频脊线、能量比 |
+| 5–60 kHz（扩展后可到 100 kHz） | 250–500 kHz | 0.32–1 ms 窗；高频低能量需保留 float64 统计 | 高频瞬态、谱通量、谱峭度、衰减、残差 |
+
+三条路径最终可按窗口时间戳合并为一行特征。每条路径内部仍需先生成规范带通信号，再在同一 STFT 参数组内 batch；不同采样率/窗长不能混在一个 batch 中假装参数一致。当前代码已采用“低频谱族暂缓、其他频带使用统一安全路径”的保守策略，多采样率属于下一步正式实现。
+
+### D.3 背景 SNR、超额能量和高频可观测性门限是什么？
+
+高频能量随频率衰减，因此“数值小”不等于“没有信号”。这些量用于区分“物理上弱”与“已被背景淹没”：
+
+- `SNR_band_db`：当前频带事件帧平均能量相对背景帧平均能量的 dB 值；
+- `E_excess`：事件段能量减去背景均值基线后的非负超额能量；
+- `SNR_high_db`：当前频带内部高频子带的局部背景 SNR；
+- `high_observable`：高频 SNR 达到默认 3 dB 且事件能量有效时为 1，否则为 0；
+- `H2_observable`：二倍频脊线邻域自身的事件/背景 SNR 达到 3 dB 且存在有效二倍频能量时为 1。
+
+当 `high_observable=0`，`beta_H`、`T_half_high` 输出 NaN；当 `H2_observable=0`，二倍频比值/偏差类特征输出 NaN。NaN 在这里表示“不可观测”，不是算法异常，也不是物理零。
+
+### D.4 “CPU/GPU、单窗/batch、1/N worker 全量回归”是什么？
+
+这是上线前的等价性矩阵，不是只运行一次单元测试。对同一批固定解析信号和真实窗口，至少比较以下组合：
+
+1. CPU reference 与 GPU 前向/CPU 配对逆变换；
+2. 单窗口计算与 `(band, window, sample)` batch 计算；
+3. `window_workers=1` 与 `window_workers=N`；
+4. 共享 STFT 开启与关闭；
+5. 每列特征值、NaN/Inf、窗口 ID、输出 schema、运行日志和峰值内存。
+
+允许的差异必须预先定义，例如 Torch/CPU 浮点相对误差不超过 `1e-5`；窗口 ID、列集合和可观测性状态则必须完全一致。当前安全测试已覆盖配对 STFT/ISTFT、能量守恒、batch/reference、WPT、阻尼原子和 processed 门禁；真实数据上线前仍应按不同采样率和工况抽样执行完整矩阵。
+
+### D.5 “全部验收通过后才把 GPU/共享设为默认”是什么意思？
+
+它是发布门禁：在 reference、GPU、batch 和多 worker 的逐列结果未通过前，生产默认应保持 CPU/单进程或显式关闭共享，以避免性能优化掩盖数学错误。验收通过后，才将 `ENABLE_SHARED_STFT=True` 和 CUDA 作为默认生产配置；关闭选项仍保留用于回归和故障定位。
+
+这不是要求永远关闭 GPU，而是要求先证明“开启优化仍计算同一个量”，再享受速度收益。当前修复已通过合成信号和单窗口端到端检查，真实 flow/BK/QJ 全量重算前仍应保留小样本回归报告。
+
+### D.6 “用新 schema 重算 flow、BK、QJ”具体要做什么？
+
+新 schema 不只是改一个版本字符串，而是特征定义、频带、残差、谐波上下文和缺失值语义都发生了变化。需要：
+
+1. 使用新代码和新 Notebook 配置，重新读取 flow、BK、QJ 的原始 NPZ/TDMS；
+2. 统一执行“去均值 → 100 Hz 高通/105 kHz 过渡低通 → 规范频带 → 新特征族”；
+3. 删除或隔离旧输出目录和旧 `processed_source_files.txt`，不能让旧日志跳过新计算；
+4. 重新生成特征 CSV、窗口日志和 schema 元数据，确认 `feature_schema_version` 为 `pccp-v4-band100k-safe-shared-20260910`；
+5. 重新检查各类别的窗口完整率、可观测性比例、NaN 分布、频带能量分布和标签对应关系；
+6. 用新数据重新训练/验证模型，旧模型不能直接接收新 schema 的列，因为列数、列语义和 NaN 含义均可能不同。
+
+这一步的目标是让 flow、BK、QJ 三类样本处于同一计算口径下，而不是仅对旧 CSV 做列名迁移或补空列。旧数据最多作为对照实验，不能与新 schema 数据直接混合训练。

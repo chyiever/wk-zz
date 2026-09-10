@@ -63,12 +63,12 @@ class FeatureParams:
     """
 
     highpass_hz: float = 1_000.0
-    main_band_hz: tuple[float, float] = (5_000.0, 60_000.0)
+    main_band_hz: tuple[float, float] = (5_000.0, 100_000.0)
     low_band_hz: tuple[float, float] = (5_000.0, 15_000.0)
     mid_band_hz: tuple[float, float] = (15_000.0, 30_000.0)
     high1_band_hz: tuple[float, float] = (20_000.0, 40_000.0)
-    high2_band_hz: tuple[float, float] = (20_000.0, 60_000.0)
-    harmonic_band_hz: tuple[float, float] = (25_000.0, 60_000.0)
+    high2_band_hz: tuple[float, float] = (20_000.0, 100_000.0)
+    harmonic_band_hz: tuple[float, float] = (25_000.0, 100_000.0)
     normalize_robust: bool = True
     envelope_smooth_ms: float = 0.2
     onset_quantile: float = 0.05
@@ -80,7 +80,7 @@ class FeatureParams:
     short_stft_overlap: float = 0.75
     short_stft_nfft: int | None = None
     ridge_main_search_hz: tuple[float, float] = (5_000.0, 30_000.0)
-    ridge_h2_search_hz: tuple[float, float] = (10_000.0, 60_000.0)
+    ridge_h2_search_hz: tuple[float, float] = (10_000.0, 100_000.0)
     ridge_jump_penalty_hz: float = 2_000.0
     ridge_relative_bandwidth: float = 0.08
     ridge_valid_energy_ratio: float = 0.2

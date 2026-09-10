@@ -7,7 +7,7 @@
 
 ## 符号约定
 
-- $x_B[n]$：当前规范带通信号；$X_B$：由同一 `STFT` 后端计算的复谱；$M_h\in\{0,1\}$：谐波脊线掩模；唯一残差定义为 $X_{\text{res}}=(1-M_h)X_B$、$x_{\text{res}}=\mathrm{ISTFT}(X_{\text{res}})$
+- $x_B[n]$：当前规范带通信号（默认关注 100 Hz–100 kHz）；$X_B$：由同一 `STFT` 后端计算的复谱；$M_h\in\{0,1\}$：谐波脊线掩模；唯一残差定义为 $X_{\text{res}}=(1-M_h)X_B$、$x_{\text{res}}=\mathrm{ISTFT}(X_{\text{res}})$
 - $e[n]$：包络 $e[n]=|\mathrm{hilbert}(s[n])|$，$s[n]$ 取 $x_B,x_{H1},x_{H2}$ 或 $x_{\text{res}}$
 - $f_1(t)$：主脊线频率轨迹；$f_2(t)$：二倍频脊线频率轨迹
 - $P(t,f)$：STFT 功率谱；$E_B=\sum_{f\in B}P(t,f)$ 为频带能量
@@ -101,10 +101,12 @@
 ### 频带前缀与子带划分
 CSV 列名仍采用 `b_<band>__<base>`，但特征按物理适用的族选择，不再在每个频带上全部重复。例如：
 
-- `b_100_60k` 是明确的宽带谐波上下文，可输出 harmonic/wavelet/damped 等完整族；
+- `b_100_100k` 是明确的宽带谐波上下文，可输出 harmonic/wavelet/damped 等完整族；
 - `b_100_1k` 主要输出 time/spectral/background；
 - `b_5k_15k` 主要输出 time/spectral/ridge/background；
 - `b_30k_60k` 输出 time/spectral/residual/background，并通过高频可观测门限解释衰减量。
+
+当前 DATA09 正式频带为 `b_100_100k`、`b_1k_100k`、`b_100_1k`、`b_1k_5k`、`b_5k_15k`、`b_15k_30k`、`b_30k_60k`、`b_60k_100k`；预处理先对整段信号去均值，再执行 100 Hz 高通，并以 105 kHz 低通提供 100 kHz 通带的过渡余量。
 
 `b_<band>` 前缀决定该频带内的子带参数：`sliding_window.build_params_for_band()` 按主带跨度分数生成 `low/mid/high1/high2/harmonic` 子带（低频 $0.30\times$、中频 $0.30$–$0.60\times$、高频 $0.50$–$0.80\times$、高频带 $0.60\times$–上限、谐波带 $0.50\times$–上限），主脊线搜索 $0$–$0.65\times$ 跨度。因此同名基础特征在不同频带前缀下的高/低频含义不同，比较时须带上前缀。
 频带划分的常量定义见 `src/fea_cpt_gpu_v2_2/params.py` 的 `LOW/MID/HIGH1/HIGH2/HARMONIC_BAND_HZ`，中文展示见 `feature_schema.py:band_chinese_label()`。

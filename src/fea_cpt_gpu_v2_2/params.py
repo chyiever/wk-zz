@@ -29,7 +29,7 @@ PREPROCESS_HIGHPASS_HZ = 1_000.0
 # Default: (5 kHz, 60 kHz).
 # Recommended range: low cutoff 3-10 kHz, high cutoff min(40-80 kHz, 0.8 Nyquist).
 # Tuning rationale: widen when the sensor chain supports more bandwidth; narrow when out-of-band noise is strong.
-MAIN_BAND_HZ = (5_000.0, 60_000.0)
+MAIN_BAND_HZ = (5_000.0, 100_000.0)
 
 # Feature names: R_hl, beta_H, R_res_hl, R_high_res, T_half_high.
 # Function family: band-energy and high-frequency decay features.
@@ -39,8 +39,8 @@ MAIN_BAND_HZ = (5_000.0, 60_000.0)
 LOW_BAND_HZ = (5_000.0, 15_000.0)
 MID_BAND_HZ = (15_000.0, 30_000.0)
 HIGH1_BAND_HZ = (20_000.0, 40_000.0)
-HIGH2_BAND_HZ = (20_000.0, 60_000.0)
-HARMONIC_BAND_HZ = (25_000.0, 60_000.0)
+HIGH2_BAND_HZ = (20_000.0, 100_000.0)
+HARMONIC_BAND_HZ = (25_000.0, 100_000.0)
 
 # Feature names: most amplitude-insensitive features.
 # Function family: robust normalization.
@@ -91,8 +91,8 @@ SHORT_STFT_NFFT = None
 # Physical meaning: main-ridge and second-harmonic ridge search region plus temporal smoothness.
 # Defaults: main search=(5,30)kHz, second harmonic=(10,60)kHz, jump penalty=2000 Hz, relative bandwidth=0.08.
 # Recommended ranges: search bands follow sensor bandwidth; jump penalty 500-5000 Hz; relative bandwidth 0.03-0.12.
-RIDGE_MAIN_SEARCH_HZ = (5_000.0, 30_000.0)
-RIDGE_H2_SEARCH_HZ = (10_000.0, 60_000.0)
+RIDGE_MAIN_SEARCH_HZ = (5_000.0, 50_000.0)
+RIDGE_H2_SEARCH_HZ = (10_000.0, 100_000.0)
 RIDGE_JUMP_PENALTY_HZ = 2_000.0
 RIDGE_RELATIVE_BANDWIDTH = 0.08
 

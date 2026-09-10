@@ -90,7 +90,7 @@ def build_feature_request_map(
     return requests, harmonic_band_name
 
 
-FEATURE_SCHEMA_VERSION = "pccp-v3-safe-shared-20260910"
+FEATURE_SCHEMA_VERSION = "pccp-v4-band100k-safe-shared-20260910"
 ALLOWED_NAN_BASE_FEATURES = frozenset({
     "T_half_high", "alpha_hat", "beta_H", "H2_ratio", "R_2_1", "R_h", "epsilon_2x", "C_h",
 })
@@ -522,13 +522,13 @@ def build_params_for_band(band: tuple[float, float], sample_rate: float) -> Any:
     harmonic_band = _safe_band(low + 0.50 * span, high, nyq)
     # Observable harmonic contract for the known 100 Hz-60 kHz PCCP range: f1 is meaningful up
     # to 30 kHz and f2 is searched in the same full context up to 60 kHz.
-    ridge_main = _safe_band(low, min(low + 0.65 * span, 30_000.0, high), nyq)
-    ridge_h2 = _safe_band(max(100.0, low * 2.0), min(high, 60_000.0, nyq * 0.995), nyq)
+    ridge_main = _safe_band(low, min(low + 0.65 * span, 50_000.0, high), nyq)
+    ridge_h2 = _safe_band(max(100.0, low * 2.0), min(high, 100_000.0, nyq * 0.995), nyq)
     return replace(
         DEFAULT_FEATURE_PARAMS,
         # The outer whole-file preprocessing already removes drift.  Keep the per-band setting
         # below the requested passband instead of deleting the known 100 Hz-1 kHz content.
-        highpass_hz=max(50.0, min(80.0, low * 0.8)),
+        highpass_hz=100.0,
         main_band_hz=(low, high),
         low_band_hz=low_band,
         mid_band_hz=mid_band,
@@ -1041,10 +1041,10 @@ def _iter_adaptive_stft_chunks(
 @dataclass
 class SlidingWindowConfig:
     bands: list[tuple[str, tuple[float, float]]] = field(default_factory=lambda: [
-        ('b_100_60k', (100.0, 60_000.0)),
-        ('b_1k_60k', (1_000.0, 60_000.0)),
+        ('b_100_100k', (100.0, 100_000.0)),
+        ('b_1k_100k', (1_000.0, 100_000.0)),
     ])
-    preproc_band: tuple[float, float] = (80.0, 65_000.0)
+    preproc_band: tuple[float, float] = (100.0, 105_000.0)
     window_duration_s: float = 0.02
     window_overlap: float = 0.50
     target_sample_rate: float = 500_000.0
