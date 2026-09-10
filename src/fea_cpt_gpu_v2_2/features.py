@@ -410,7 +410,11 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     mean_power = np.zeros(0, dtype=np.float64)
     if context.stft_power.size:
         mean_power = np.mean(np.asarray(context.stft_power, dtype=np.float64), axis=1)
-        spread_num = np.sum(((context.stft_freqs - np.mean(sc))[:, None] ** 2) * context.stft_power, dtype=np.float64)
+        global_centroid = float(
+            np.sum(context.stft_freqs[:, None] * context.stft_power, dtype=np.float64)
+            / (np.sum(context.stft_power, dtype=np.float64) + eps)
+        )
+        spread_num = np.sum(((context.stft_freqs - global_centroid)[:, None] ** 2) * context.stft_power, dtype=np.float64)
         spread_den = np.sum(context.stft_power, dtype=np.float64)
         features["spectral_spread"] = float(np.sqrt(max(spread_num / (spread_den + eps), 0.0)))
     else:
@@ -503,10 +507,16 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     # H_stack：1×/2×/3×f1 谐波位置 ±相对带宽 带内积分
     harmonic_stack = 0.0
     if len(context.ridge_f1) and context.stft_power.size:
+        # Union the 1x/2x/3x neighbourhoods per frame; overlapping bands must not be counted
+        # twice at low f1, otherwise H_stack can exceed the total energy by construction.
+        stack_mask = np.zeros_like(context.stft_power, dtype=bool)
         for multiplier in (1, 2, 3):
             target = multiplier * context.ridge_f1
             hw = np.maximum(2.0 * bin_hz, params.ridge_relative_bandwidth * np.maximum(target, 0.0))
-            harmonic_stack += _ridge_band_energy(context.stft_power, context.stft_freqs, target, hw)
+            for frame_index, target_hz in enumerate(target):
+                if target_hz > 0.0:
+                    stack_mask[:, frame_index] |= np.abs(context.stft_freqs - target_hz) <= hw[frame_index]
+        harmonic_stack = float(np.sum(context.stft_power[stack_mask], dtype=np.float64))
     features["H_stack"] = float(harmonic_stack / (context.total_energy_tf + eps))
 
     # R_h：f1/f2 脊线固定 ±1 kHz 邻域带积分，与 R_2_1（相对带宽）互补
