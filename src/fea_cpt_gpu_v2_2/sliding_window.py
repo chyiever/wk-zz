@@ -864,6 +864,31 @@ def _worker_process_window(
     return feat_row, log_row
 
 
+def _worker_process_window_batch(
+    sig_shm_info, stft_shm_info, window_batch, sample_rate, params_map,
+    base_meta, start_dt, bands, enable_shared_stft, feature_requests=None,
+):
+    """Process a small group of windows in one worker task.
+
+    The singular worker remains the numerical authority; batching only removes
+    process/Future submission overhead and preserves per-window outputs exactly.
+    """
+    perf_start = time.perf_counter()
+    result = [
+        _worker_process_window(
+            sig_shm_info, stft_shm_info, win[0][0], win[0][1], win[0][2], win[0][3], win[0][4], win[1],
+            sample_rate, params_map, base_meta, start_dt, bands, enable_shared_stft,
+            feature_requests,
+        )
+        for win in window_batch
+    ]
+    logging.getLogger('fea_cpt_gpu_v2_2').debug(
+        'perf stage=cpu_feature_batch windows=%d elapsed_ms=%.3f',
+        len(window_batch), (time.perf_counter() - perf_start) * 1000.0,
+    )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # v2.2 主进程：集中化 GPU STFT 批处理
 # ---------------------------------------------------------------------------
@@ -905,6 +930,7 @@ def _compute_one_stft_chunk(
     chunk_end: int,
 ) -> _SharedArrayPack:
     """Compute one STFT chunk and store it in shared memory."""
+    perf_start = time.perf_counter()
     if not params_map:
         raise ValueError('params_map is empty')
     reference_params = next(iter(params_map.values()))
@@ -956,7 +982,7 @@ def _compute_one_stft_chunk(
         stft_power[band_index, :, ~mask, :] = 0.0
         short_power[band_index, :, ~short_mask, :] = 0.0
 
-    return _SharedArrayPack({
+    pack = _SharedArrayPack({
         'stft_freqs': stft_freqs.astype(np.float64),
         'stft_times': stft_times.astype(np.float64),
         'stft_complex': stft_complex,
@@ -968,6 +994,11 @@ def _compute_one_stft_chunk(
         'preprocessed_signals': preprocessed_signals,
         'stft_backend_code': np.asarray([1 if active_stft_backend() == 'torch' else 0], dtype=np.int8),
     })
+    logging.getLogger('fea_cpt_gpu_v2_2').debug(
+        'perf stage=gpu_stft_chunk windows=%d bands=%d elapsed_ms=%.3f',
+        n_windows, n_bands, (time.perf_counter() - perf_start) * 1000.0,
+    )
+    return pack
 
 
 def build_canonical_band_signals(
@@ -1058,6 +1089,7 @@ class SlidingWindowConfig:
     enable_numa_binding: bool = True
     enable_shared_stft: bool = True
     stft_batch_size: int = 200
+    worker_window_batch: int = 4
     feature_families_by_band: dict[str, tuple[str, ...]] | None = None
     harmonic_band_name: str | None = None
 
@@ -1487,23 +1519,24 @@ def build_sliding_window_dataset(
                             try:
                                 futures = []
                                 stft_info = stft_pack.get_info()
-                                for idx_in_chunk, (win_id, i0, i1, win_len, step_len) in enumerate(
-                                    windows[chunk_start:chunk_end]
-                                ):
+                                worker_batch = max(1, int(config.worker_window_batch))
+                                chunk_windows = windows[chunk_start:chunk_end]
+                                for b0 in range(0, len(chunk_windows), worker_batch):
+                                    group = chunk_windows[b0:b0 + worker_batch]
+                                    indexed_group = [(win, b0 + j) for j, win in enumerate(group)]
                                     f = executor.submit(
-                                        _worker_process_window,
+                                        _worker_process_window_batch,
                                         sig_info, stft_info,
-                                        win_id, i0, i1, win_len, step_len, idx_in_chunk,
-                                        effective_rate, params_map, base_meta, start_dt,
+                                        indexed_group, effective_rate, params_map, base_meta, start_dt,
                                         config.bands, config.enable_shared_stft, feature_requests,
                                     )
                                     futures.append(f)
 
                                 for fut in as_completed(futures):
                                     try:
-                                        feat_row, log_row = fut.result()
-                                        rows_features.append(feat_row)
-                                        rows_log.append(log_row)
+                                        for feat_row, log_row in fut.result():
+                                            rows_features.append(feat_row)
+                                            rows_log.append(log_row)
                                     except Exception as e:
                                         stats['failed'] += 1
                                         logger.warning('window compute failed: %s', e)
@@ -1513,21 +1546,21 @@ def build_sliding_window_dataset(
                     futures = []
                     for b0 in range(0, len(windows), config.window_batch_size):
                         chunk = windows[b0:b0 + config.window_batch_size]
-                        for w in chunk:
-                            f = executor.submit(
-                                _worker_process_window,
-                                sig_info, None,
-                                w[0], w[1], w[2], w[3], w[4], 0,
-                                effective_rate, params_map, base_meta, start_dt,
-                                config.bands, False, feature_requests,
-                            )
-                            futures.append(f)
+                        worker_batch = max(1, int(config.worker_window_batch))
+                        for j0 in range(0, len(chunk), worker_batch):
+                            group = chunk[j0:j0 + worker_batch]
+                            indexed_group = [(win, 0) for win in group]
+                            futures.append(executor.submit(
+                                _worker_process_window_batch,
+                                sig_info, None, indexed_group, effective_rate, params_map,
+                                base_meta, start_dt, config.bands, False, feature_requests,
+                            ))
 
                     for fut in as_completed(futures):
                         try:
-                            feat_row, log_row = fut.result()
-                            rows_features.append(feat_row)
-                            rows_log.append(log_row)
+                            for feat_row, log_row in fut.result():
+                                rows_features.append(feat_row)
+                                rows_log.append(log_row)
                         except Exception as e:
                             stats['failed'] += 1
                             logger.warning('窗口计算失败: %s', e)
