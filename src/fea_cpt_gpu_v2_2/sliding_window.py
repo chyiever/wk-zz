@@ -1472,33 +1472,43 @@ def build_sliding_window_dataset(
                         stft_batch_size=config.stft_batch_size,
                     )
 
-                    # Submit and collect one STFT chunk at a time so shared memory is released promptly.
-                    for stft_pack, chunk_start, chunk_end in stft_chunks:
-                        try:
-                            futures = []
-                            stft_info = stft_pack.get_info()
-                            for idx_in_chunk, (win_id, i0, i1, win_len, step_len) in enumerate(
-                                windows[chunk_start:chunk_end]
-                            ):
-                                f = executor.submit(
-                                    _worker_process_window,
-                                    sig_info, stft_info,
-                                    win_id, i0, i1, win_len, step_len, idx_in_chunk,
-                                    effective_rate, params_map, base_meta, start_dt,
-                                    config.bands, config.enable_shared_stft, feature_requests,
-                                )
-                                futures.append(f)
+                    # Double-buffer the producer: while CPU workers consume chunk N,
+                    # compute chunk N+1 on the GPU.  The numerical path is unchanged;
+                    # only stage scheduling is overlapped.
+                    stft_iter = iter(stft_chunks)
+                    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="stft-producer") as stft_producer:
+                        pending_stft = stft_producer.submit(next, stft_iter, None)
+                        while True:
+                            current = pending_stft.result()
+                            if current is None:
+                                break
+                            pending_stft = stft_producer.submit(next, stft_iter, None)
+                            stft_pack, chunk_start, chunk_end = current
+                            try:
+                                futures = []
+                                stft_info = stft_pack.get_info()
+                                for idx_in_chunk, (win_id, i0, i1, win_len, step_len) in enumerate(
+                                    windows[chunk_start:chunk_end]
+                                ):
+                                    f = executor.submit(
+                                        _worker_process_window,
+                                        sig_info, stft_info,
+                                        win_id, i0, i1, win_len, step_len, idx_in_chunk,
+                                        effective_rate, params_map, base_meta, start_dt,
+                                        config.bands, config.enable_shared_stft, feature_requests,
+                                    )
+                                    futures.append(f)
 
-                            for fut in as_completed(futures):
-                                try:
-                                    feat_row, log_row = fut.result()
-                                    rows_features.append(feat_row)
-                                    rows_log.append(log_row)
-                                except Exception as e:
-                                    stats['failed'] += 1
-                                    logger.warning('window compute failed: %s', e)
-                        finally:
-                            stft_pack.cleanup()
+                                for fut in as_completed(futures):
+                                    try:
+                                        feat_row, log_row = fut.result()
+                                        rows_features.append(feat_row)
+                                        rows_log.append(log_row)
+                                    except Exception as e:
+                                        stats['failed'] += 1
+                                        logger.warning('window compute failed: %s', e)
+                            finally:
+                                stft_pack.cleanup()
                 else:
                     futures = []
                     for b0 in range(0, len(windows), config.window_batch_size):
