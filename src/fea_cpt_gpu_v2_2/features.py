@@ -20,6 +20,7 @@ import math
 
 import numpy as np
 from scipy import signal, stats
+from scipy.fftpack import dct
 
 from .base import FeatureContext, FeatureResult
 from .gpu_backend import rank2_hankel_quality
@@ -27,14 +28,23 @@ from .signal_ops import safe_divide, smooth_envelope
 
 
 FEATURE_FAMILIES: dict[str, frozenset[str]] = {
+    "classic": frozenset({
+        "mean", "variance", "rms", "skewness", "kurtosis", "waveform_factor",
+        "crest_factor", "impulse_factor", "clearance_factor",
+    }),
     "time": frozenset({
         "r_p", "C_E", "S_env", "Sk_env", "R_td", "R_fb", "C_bulge",
         "N_bulge", "epsilon_env", "eta_bw", "R_tkeo", "K_loc",
     }),
     "spectral": frozenset({
         "SC_mean", "k_sc", "R_hl_mean", "k_hl", "beta_H", "H_tf", "SF", "H_alpha",
-        "F_peak", "SK_max",
+        "F_peak", "SK_max", "spectral_spread",
     }),
+    "entropy": frozenset({
+        "permutation_entropy", "MPE_scale2", "MPE_scale3", "singular_spectrum_entropy",
+        "power_spectral_entropy", "energy_entropy",
+    }),
+    "cepstral": frozenset({f"MFCC_{index:02d}" for index in range(1, 14)}),
     "ridge": frozenset({
         "rho_r", "G_gap", "R2_ridge", "S_arch", "rho_up", "rho_down", "N_turn",
         "Delta_f_span", "C_f",
@@ -108,6 +118,78 @@ def _tkeo(values: np.ndarray) -> np.ndarray:
 
 def _crest_factor(values: np.ndarray, eps: float) -> float:
     return float(np.max(np.abs(values)) / (math.sqrt(np.mean(values ** 2)) + eps))
+
+
+def _permutation_entropy(values: np.ndarray, order: int = 3, delay: int = 1) -> float:
+    """Normalized Bandt-Pompe permutation entropy (0..1)."""
+    values = np.asarray(values, dtype=float)
+    n = values.size - delay * (order - 1)
+    if n < max(8, order):
+        return 0.0
+    embedded = np.column_stack([values[i * delay:i * delay + n] for i in range(order)])
+    patterns = np.argsort(embedded, axis=1, kind="mergesort")
+    _, counts = np.unique(patterns, axis=0, return_counts=True)
+    probability = counts.astype(np.float64) / float(n)
+    return float(-np.sum(probability * np.log(probability)) / math.log(math.factorial(order)))
+
+
+def _multiscale_permutation_entropy(values: np.ndarray, scale: int) -> float:
+    values = np.asarray(values, dtype=float)
+    n = values.size // scale
+    if n < 16:
+        return 0.0
+    coarse = values[:n * scale].reshape(n, scale).mean(axis=1)
+    return _permutation_entropy(coarse)
+
+
+def _singular_spectrum_entropy(values: np.ndarray, eps: float) -> float:
+    values = np.asarray(values, dtype=float)
+    if values.size < 32:
+        return 0.0
+    sample = values[::max(1, values.size // 2048)]
+    rows = min(64, max(8, sample.size // 4))
+    cols = sample.size - rows + 1
+    if cols <= 1:
+        return 0.0
+    hankel = np.lib.stride_tricks.sliding_window_view(sample, rows).T
+    singular = np.linalg.svd(hankel, compute_uv=False)
+    probability = (singular ** 2).astype(np.float64)
+    probability /= np.sum(probability, dtype=np.float64) + eps
+    return float(-np.sum(probability * np.log(probability + eps)) / math.log(len(probability)))
+
+
+def _energy_entropy(values: np.ndarray, parts: int = 8, eps: float = 1e-12) -> float:
+    values = np.asarray(values, dtype=float)
+    if values.size < parts:
+        return 0.0
+    chunks = np.array_split(values, parts)
+    energy = np.asarray([np.sum(chunk * chunk, dtype=np.float64) for chunk in chunks], dtype=np.float64)
+    probability = energy / (np.sum(energy, dtype=np.float64) + eps)
+    return float(-np.sum(probability * np.log(probability + eps)) / math.log(parts))
+
+
+def _mfcc_features(freqs: np.ndarray, power: np.ndarray, band_hz: tuple[float, float], eps: float) -> dict[str, float]:
+    """Compute 13 log-Mel DCT coefficients from the mean STFT power."""
+    if power.ndim != 2 or power.size == 0 or len(freqs) < 4:
+        return {f"MFCC_{index:02d}": 0.0 for index in range(1, 14)}
+    mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
+    selected_freqs = np.asarray(freqs[mask], dtype=float)
+    selected_power = np.mean(np.asarray(power[mask], dtype=np.float64), axis=1)
+    if selected_freqs.size < 4 or selected_power.sum() <= eps:
+        return {f"MFCC_{index:02d}": 0.0 for index in range(1, 14)}
+    low_mel = 2595.0 * np.log10(1.0 + max(selected_freqs[0], 1.0) / 700.0)
+    high_mel = 2595.0 * np.log10(1.0 + max(selected_freqs[-1], selected_freqs[0] + 1.0) / 700.0)
+    mel_points = np.linspace(low_mel, high_mel, 28)
+    hz_points = 700.0 * (10.0 ** (mel_points / 2595.0) - 1.0)
+    filterbank = np.zeros((26, selected_freqs.size), dtype=np.float64)
+    for index in range(1, 27):
+        left, center, right = hz_points[index - 1:index + 2]
+        up = (selected_freqs - left) / max(center - left, eps)
+        down = (right - selected_freqs) / max(right - center, eps)
+        filterbank[index - 1] = np.maximum(0.0, np.minimum(up, down))
+    mel_energy = filterbank @ selected_power
+    coefficients = dct(np.log(mel_energy + eps), type=2, norm="ortho")
+    return {f"MFCC_{index:02d}": float(coefficients[index]) for index in range(1, 14)}
 
 
 def _local_kurtosis_max(values: np.ndarray, window: int) -> float:
@@ -264,6 +346,22 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     features: dict[str, float] = {}
     requested = context.requested_features
 
+    # Classical amplitude statistics (computed on the canonical current-band signal).
+    abs_signal = np.abs(np.asarray(signal_values, dtype=np.float64))
+    mean_abs = float(np.mean(abs_signal)) if abs_signal.size else 0.0
+    rms = float(np.sqrt(np.mean(np.asarray(signal_values, dtype=np.float64) ** 2))) if abs_signal.size else 0.0
+    if requested is None or requested & FEATURE_FAMILIES["classic"]:
+        features["mean"] = float(np.mean(signal_values)) if signal_values.size else 0.0
+        features["variance"] = float(np.var(signal_values, dtype=np.float64)) if signal_values.size else 0.0
+        features["rms"] = rms
+        features["skewness"] = float(stats.skew(signal_values, bias=False)) if len(signal_values) > 2 else 0.0
+        features["kurtosis"] = float(stats.kurtosis(signal_values, fisher=False, bias=False)) if len(signal_values) > 3 else 0.0
+        features["waveform_factor"] = float(rms / (mean_abs + eps))
+        features["crest_factor"] = float(np.max(abs_signal) / (rms + eps)) if abs_signal.size else 0.0
+        features["impulse_factor"] = float(np.max(abs_signal) / (mean_abs + eps)) if abs_signal.size else 0.0
+        mean_sqrt = float(np.mean(np.sqrt(abs_signal))) if abs_signal.size else 0.0
+        features["clearance_factor"] = float(np.max(abs_signal) / (mean_sqrt ** 2 + eps)) if abs_signal.size else 0.0
+
     features["r_p"] = float((peak_t - on_t) / duration)
     features["C_E"] = float(np.sum(time_axis * energy_env) / (np.sum(energy_env) + eps))
     features["A_env"] = float(((off_t - peak_t) - (peak_t - on_t)) / duration)
@@ -309,6 +407,27 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     power_spectrum = np.mean(context.stft_power, axis=1) if context.stft_power.size else np.zeros(0)
     features["SF"] = float(np.exp(np.mean(np.log(power_spectrum + eps))) / (np.mean(power_spectrum) + eps)) if power_spectrum.size else 0.0
     features["H_alpha"] = _renyi_entropy(prob_tf, params.renyi_alpha, eps) if prob_tf.size else 0.0
+    mean_power = np.zeros(0, dtype=np.float64)
+    if context.stft_power.size:
+        mean_power = np.mean(np.asarray(context.stft_power, dtype=np.float64), axis=1)
+        spread_num = np.sum(((context.stft_freqs - np.mean(sc))[:, None] ** 2) * context.stft_power, dtype=np.float64)
+        spread_den = np.sum(context.stft_power, dtype=np.float64)
+        features["spectral_spread"] = float(np.sqrt(max(spread_num / (spread_den + eps), 0.0)))
+    else:
+        features["spectral_spread"] = 0.0
+
+    need_entropy = requested is None or bool(requested & FEATURE_FAMILIES["entropy"])
+    if need_entropy:
+        features["permutation_entropy"] = _permutation_entropy(signal_values)
+        features["MPE_scale2"] = _multiscale_permutation_entropy(signal_values, 2)
+        features["MPE_scale3"] = _multiscale_permutation_entropy(signal_values, 3)
+        features["singular_spectrum_entropy"] = _singular_spectrum_entropy(signal_values, eps)
+        psd_probability = mean_power / (np.sum(mean_power, dtype=np.float64) + eps) if mean_power.size else np.zeros(0)
+        features["power_spectral_entropy"] = float(-np.sum(psd_probability * np.log(psd_probability + eps)) / math.log(len(psd_probability))) if psd_probability.size > 1 else 0.0
+        features["energy_entropy"] = _energy_entropy(signal_values, eps=eps)
+
+    if requested is None or requested & FEATURE_FAMILIES["cepstral"]:
+        features.update(_mfcc_features(context.stft_freqs, context.stft_power, params.main_band_hz, eps))
 
     # Local background diagnostics.  Use event bounds when possible and fall back to the leading
     # fraction of the window.  These are observability diagnostics, not class labels.

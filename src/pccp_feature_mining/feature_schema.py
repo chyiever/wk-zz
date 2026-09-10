@@ -58,6 +58,23 @@ META_COLUMNS = {
 FEATURE_NAME_RE = re.compile(r"^b_[0-9a-zA-Z_]+__")
 
 BASE_FEATURE_MEANINGS = {
+    "mean": "当前规范带通信号的算术均值（去均值后应接近零）",
+    "variance": "当前规范带通信号的方差，描述幅值波动能量",
+    "rms": "当前规范带通信号的均方根幅值",
+    "skewness": "当前规范带通信号幅值分布的偏度",
+    "kurtosis": "当前规范带通信号幅值分布的 Pearson 峭度",
+    "waveform_factor": "波形因子，RMS 与平均绝对幅值之比",
+    "crest_factor": "峰值因子，峰值绝对幅值与 RMS 之比",
+    "impulse_factor": "脉冲因子，峰值绝对幅值与平均绝对幅值之比",
+    "clearance_factor": "裕度因子，峰值绝对幅值与平均平方根幅值平方之比",
+    "permutation_entropy": "归一化排列熵，描述相邻采样排序模式复杂度",
+    "MPE_scale2": "尺度 2 多尺度排列熵",
+    "MPE_scale3": "尺度 3 多尺度排列熵",
+    "singular_spectrum_entropy": "奇异谱熵，描述 Hankel 奇异值能量分布复杂度",
+    "spectral_spread": "频谱延展度，频率相对谱质心的加权标准差",
+    "power_spectral_entropy": "功率谱熵，描述平均功率谱的频率分布复杂度",
+    "energy_entropy": "分段能量熵，描述时间分解片段的能量分散程度",
+    **{f"MFCC_{index:02d}": f"第 {index} 个梅尔频率倒谱系数" for index in range(1, 14)},
     "r_p": "包络峰位比，描述主峰在分析窗内出现的相对位置",
     "C_E": "能量质心位置，描述能量在时间轴上的前后偏置",
     "A_env": "包络不对称度，描述包络上升与衰减形状差异",

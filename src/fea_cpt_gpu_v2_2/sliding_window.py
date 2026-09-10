@@ -52,12 +52,12 @@ def _default_feature_families(
     if high <= 1_500.0:
         # A 0.64 ms STFT at 1 MHz cannot resolve 100 Hz-1 kHz.  Keep waveform/background
         # summaries here; low-frequency spectral features require the planned long-window group.
-        return ("time", "background")
+        return ("classic", "time", "background")
     if high <= 15_000.0:
-        return ("time", "spectral", "ridge", "background")
+        return ("classic", "time", "spectral", "entropy", "cepstral", "ridge", "background")
     if low >= 30_000.0:
-        return ("time", "spectral", "residual", "background")
-    return ("time", "spectral", "ridge", "residual", "background")
+        return ("classic", "time", "spectral", "entropy", "cepstral", "residual", "background")
+    return ("classic", "time", "spectral", "entropy", "cepstral", "ridge", "residual", "background")
 
 
 def build_feature_request_map(
@@ -90,7 +90,7 @@ def build_feature_request_map(
     return requests, harmonic_band_name
 
 
-FEATURE_SCHEMA_VERSION = "pccp-v4-band100k-safe-shared-20260910"
+FEATURE_SCHEMA_VERSION = "pccp-v5-band100k-stat-entropy-20260910"
 ALLOWED_NAN_BASE_FEATURES = frozenset({
     "T_half_high", "alpha_hat", "beta_H", "H2_ratio", "R_2_1", "R_h", "epsilon_2x", "C_h",
 })

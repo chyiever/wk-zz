@@ -5,7 +5,7 @@
 > 已知信号先验：断丝有效频带约为 **100 Hz–60 kHz**，总体上频率越高能量越弱；环境干扰亦有相似的随频率衰减趋势。  
 > 当前数据与配置：当前 DATA09 数据记录显示采样率主要为 **1 MHz**；notebook 将目标采样率设为 1 MHz，30 ms 无重叠窗口，预处理带通为 1–95 kHz，配置 8 个分析频带，默认启用共享 STFT、CUDA 优先和 4 个窗口进程。
 
-> **整改状态说明（2026-09-10）**：以上“当前数据与配置”和正文风险描述是修复前审计快照，用于保留问题证据；本轮已经实施的代码、配置与验收状态统一记录在文末“附录 C：整改实施与验证日志”。最新配置为先去均值、再 100 Hz 高通（预滤波上限 105 kHz），默认分析频带为 8 个，特征 schema 为 `pccp-v4-band100k-safe-shared-20260910`。
+> **整改状态说明（2026-09-10）**：以上“当前数据与配置”和正文风险描述是修复前审计快照，用于保留问题证据；本轮已经实施的代码、配置与验收状态统一记录在文末“附录 C：整改实施与验证日志”。最新配置为先去均值、再 100 Hz 高通（预滤波上限 105 kHz），默认分析频带为 8 个，特征 schema 为 `pccp-v5-band100k-stat-entropy-20260910`。
 
 ---
 
@@ -666,7 +666,7 @@ BANDS = [
 
 - 修复前工作区快照已单独提交并推送：`4d32e04`（`同步特征分析更新并新增计算风险专项审计`）。
 - 修复代码集中在 `src/fea_cpt_gpu_v2_2/`；DATA09 默认运行参数同步到 `notebooks/DATA09_v0-flow_feature_extraction.ipynb`。
-- 新输出带有 `feature_schema_version=pccp-v4-band100k-safe-shared-20260910`，并记录 `stft_backend`、`power_dtype=float64`、`harmonic_context_band`。旧共享路径产物不得与该 schema 混合训练。
+- 新输出带有 `feature_schema_version=pccp-v5-band100k-stat-entropy-20260910`，并记录 `stft_backend`、`power_dtype=float64`、`harmonic_context_band`。旧共享路径产物不得与该 schema 混合训练。
 
 ### C.2 修复结果与严重程度闭环
 
@@ -772,6 +772,20 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 
 历史 CSV 中以下列必须重算，不能通过列名转换修复：所有共享路径时频/脊线/谐波/残差列、WPT、阻尼原子、`epsilon_rec` 以及由旧 processed log 跳过而可能缺失的窗口。仅元数据列可迁移。
 
+### C.7 经典统计与熵/倒谱特征补充（本轮新增）
+
+经逐项核对，旧版本只有 `Sk_env`、`K_loc`、`CF_res`、`SF`、`H_tf`、`H_wp` 等包络/残差/谱域近似量，并没有完整输出用户列出的经典幅值统计、排列熵、奇异谱熵、频谱延展度、功率谱熵、分解能量熵和 MFCC。因此新增三个特征族：
+
+- `classic`：`mean`、`variance`、`rms`、`skewness`、`kurtosis`、`waveform_factor`、`crest_factor`、`impulse_factor`、`clearance_factor`；
+- `entropy`：`permutation_entropy`、`MPE_scale2`、`MPE_scale3`、`singular_spectrum_entropy`、`power_spectral_entropy`、`energy_entropy`；
+- `cepstral`：`MFCC_01`–`MFCC_13`。
+
+这些特征均从当前规范带通信号或其同一 STFT 派生，统计累加使用 float64。经典因子用于冲击/断丝幅值形态，排列熵和奇异谱熵用于非线性复杂度，谱熵/延展度用于频谱扩散，能量熵用于时间分解能量分布，MFCC 用于谱包络形状。它们不是全部无条件复制到所有频带：100 Hz–1 kHz 由于当前短 STFT 分辨率不足仍只输出 classic/time/background；其他适用频带按 `feature_families_by_band` 选择 entropy/cepstral。
+
+新增特征使 schema 从 v4 升级为 `pccp-v5-band100k-stat-entropy-20260910`，旧 CSV 必须重新计算，不能通过补列或重命名迁移。
+
+按当前 8 频带显式族配置，特征列数更新为：`b_100_100k` 112 列、`b_1k_100k` 79 列、`b_100_1k` 25 列、`b_1k_5k` 64 列、`b_5k_15k` 64 列、`b_15k_30k` 79 列、`b_30k_60k` 70 列、`b_60k_100k` 70 列，合计 563 列（均不含窗口元数据）。
+
 ---
 
 ## 附录 D：关于 GPU、共享、采样率和重算的六个问题
@@ -835,7 +849,7 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 1. 使用新代码和新 Notebook 配置，重新读取 flow、BK、QJ 的原始 NPZ/TDMS；
 2. 统一执行“去均值 → 100 Hz 高通/105 kHz 过渡低通 → 规范频带 → 新特征族”；
 3. 删除或隔离旧输出目录和旧 `processed_source_files.txt`，不能让旧日志跳过新计算；
-4. 重新生成特征 CSV、窗口日志和 schema 元数据，确认 `feature_schema_version` 为 `pccp-v4-band100k-safe-shared-20260910`；
+4. 重新生成特征 CSV、窗口日志和 schema 元数据，确认 `feature_schema_version` 为 `pccp-v5-band100k-stat-entropy-20260910`；
 5. 重新检查各类别的窗口完整率、可观测性比例、NaN 分布、频带能量分布和标签对应关系；
 6. 用新数据重新训练/验证模型，旧模型不能直接接收新 schema 的列，因为列数、列语义和 NaN 含义均可能不同。
 

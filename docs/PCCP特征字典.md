@@ -96,6 +96,21 @@
 | `high_observable` | 高频可观测标志 | $\mathbf1(SNR_{high}\ge3\,\mathrm{dB}\land \bar E_{H,event}>\varepsilon)$ | 为 0 时 `beta_H`、`T_half_high` 输出 `NaN`，不把不可测误写成物理零值 |
 | `H2_observable` | 二倍频可观测标志 | $\mathbf1(SNR_{2nd}\ge3\,\mathrm{dB}\land \bar E_{2,event}>\varepsilon)$ | `SNR_2nd` 使用二倍频脊线邻域的事件/背景帧能量；只在明确的宽带谐波上下文计算，为 0 时二倍频比值/偏差类量输出 `NaN` |
 
+### 经典统计、熵与倒谱增补特征（2026-09-10）
+
+| 特征族 | 变量名 | 计算口径 |
+|---|---|---|
+| 经典幅值统计 | `mean`、`variance`、`rms`、`skewness`、`kurtosis` | 当前规范带通信号的均值、方差、均方根、偏度和 Pearson 峭度（`fisher=False`） |
+| 经典因子 | `waveform_factor`、`crest_factor`、`impulse_factor`、`clearance_factor` | 分别为 RMS/平均绝对值、峰值/RMS、峰值/平均绝对值、峰值/(平均平方根幅值)$^2$ |
+| 排列熵 | `permutation_entropy`、`MPE_scale2`、`MPE_scale3` | Bandt–Pompe 三阶排列熵及时间粗粒化尺度 2、3；归一化到 0–1 |
+| 奇异谱熵 | `singular_spectrum_entropy` | 对限长 Hankel 轨迹矩阵的奇异值平方归一化后计算 Shannon 熵，并归一化到 0–1 |
+| 频谱延展度 | `spectral_spread` | $sqrt{\sum_{f,t}(f-SC)^2P(f,t)/\sum_{f,t}P(f,t)}$ |
+| 功率谱熵 | `power_spectral_entropy` | 对时间平均功率谱归一化后计算 Shannon 熵，并除以 $\log K$ |
+| 分解能量熵 | `energy_entropy` | 将时域窗口等分为 8 段，对各段能量归一化后计算 Shannon 熵，并除以 $\log 8$；它与 WPT 熵是不同分解域 |
+| 梅尔倒谱 | `MFCC_01`–`MFCC_13` | 当前带 STFT 平均功率经 26 个 Mel 三角滤波器、对数压缩和正交 DCT 得到 13 个系数 |
+
+这些增补特征通过 `classic`、`entropy`、`cepstral` 特征族选择输出。100 Hz–1 kHz 当前仍只输出 `classic/time/background`；该带的谱熵、MFCC 和频谱延展度应在长窗/低采样率多分辨率路径上线后再启用。
+
 ## 补充说明
 
 ### 频带前缀与子带划分

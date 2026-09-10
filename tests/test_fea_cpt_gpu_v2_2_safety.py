@@ -80,6 +80,17 @@ class FeaturePipelineSafetyTests(unittest.TestCase):
         self.assertIn("H2_ratio", requests["b_100_60k"])
         self.assertNotIn("H2_ratio", requests["b_5k_15k"])
 
+    def test_classic_entropy_and_mfcc_primitives_are_well_defined(self) -> None:
+        fs = 200_000.0
+        values = _signal(fs)
+        self.assertGreaterEqual(features._permutation_entropy(values), 0.0)
+        self.assertLessEqual(features._permutation_entropy(values), 1.0)
+        self.assertGreaterEqual(features._singular_spectrum_entropy(values, 1e-12), 0.0)
+        freqs, _times, _spec, power = signal_ops.compute_stft_power(values, fs, 0.64, 0.875, None)
+        mfcc = features._mfcc_features(freqs, power, (1_000.0, 60_000.0), 1e-12)
+        self.assertEqual(set(mfcc), {f"MFCC_{index:02d}" for index in range(1, 14)})
+        self.assertTrue(np.all(np.isfinite(list(mfcc.values()))))
+
     def test_safe_batch_matches_single_window_reference(self) -> None:
         fs = 200_000.0
         values = _signal(fs)
