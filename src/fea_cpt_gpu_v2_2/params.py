@@ -109,11 +109,8 @@ RIDGE_VALID_ENERGY_RATIO = 0.2
 # the relative-bandwidth R_2_1. Default: 1000 Hz. Recommended range: 500-2000 Hz.
 RIDGE_FIXED_BAND_HZ = 1_000.0
 
-# Feature names: SNR_band_db, E_excess, high_observable and harmonic observability gates.
-# The first fraction of each window is used as a conservative local background reference when
-# an external pre-event baseline is unavailable.  A feature is observable above 3 dB by default.
-BACKGROUND_FRACTION = 0.20
-OBSERVABLE_SNR_DB = 3.0
+# Background SNR/excess energy are descriptive statistics only; no binary
+# observability gate is applied because real backgrounds are non-stationary.
 
 # Feature names: C_bulge, N_bulge.
 # Function family: local bulge counting.
@@ -196,15 +193,13 @@ DEFAULT_FEATURE_PARAMS = FeatureParams(
     ridge_relative_bandwidth=RIDGE_RELATIVE_BANDWIDTH,
     ridge_valid_energy_ratio=RIDGE_VALID_ENERGY_RATIO,
     ridge_fixed_band_hz=RIDGE_FIXED_BAND_HZ,
-    background_fraction=BACKGROUND_FRACTION,
-    observable_snr_db=OBSERVABLE_SNR_DB,
     bulge_threshold_ratio=BULGE_THRESHOLD_RATIO,
     bulge_min_distance_ms=BULGE_MIN_DISTANCE_MS,
     residual_abnormal_threshold=RESIDUAL_ABNORMAL_THRESHOLD,
     local_window_ms=LOCAL_WINDOW_MS,
     asymmetry_window_ms=ASYMMETRY_WINDOW_MS,
     wavelet_name=WAVELET_NAME,
-    wavelet_level=WAVELET_LEVEL,
+    wavelet_level=0,
     renyi_alpha=RENYI_ALPHA,
     damped_freqs_hz=DAMPED_FREQS_HZ,
     damped_decay_ms=DAMPED_DECAY_MS,

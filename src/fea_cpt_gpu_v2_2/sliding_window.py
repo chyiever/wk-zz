@@ -37,7 +37,7 @@ from .base import FeatureContext, FeatureRecord
 from .features import FEATURE_FAMILIES, compute_all_features, feature_names_for_families
 from .gpu_backend import gpu_backend_info
 from .params import DEFAULT_FEATURE_PARAMS
-from .signal_ops import active_stft_backend, build_context, butter_filter, compute_stft_power, inverse_stft, robust_normalize
+from .signal_ops import active_stft_backend, build_context, butter_filter, compute_stft_power, inverse_stft, robust_normalize, infer_wavelet_level
 
 
 def _default_feature_families(
@@ -90,21 +90,21 @@ def build_feature_request_map(
     return requests, harmonic_band_name
 
 
-FEATURE_SCHEMA_VERSION = "pccp-v5-band100k-stat-entropy-20260910"
+FEATURE_SCHEMA_VERSION = "pccp-v6-band100k-no-snr-gate-wpt-auto-20260910"
 ALLOWED_NAN_BASE_FEATURES = frozenset({
-    "T_half_high", "alpha_hat", "beta_H", "H2_ratio", "R_2_1", "R_h", "epsilon_2x", "C_h",
+    "T_half_high", "alpha_hat", "beta_H",
 })
 
 
 def expected_output_features(
     feature_requests: dict[str, frozenset[str]],
-    wavelet_level: int,
+    wavelet_level: int | dict[str, int],
 ) -> frozenset[str]:
     """Return the exact required feature schema, including dynamic WPT node columns."""
     expected: set[str] = set()
-    node_paths = ("".join(chars) for chars in product("ad", repeat=wavelet_level))
-    all_node_paths = tuple(node_paths)
     for band_name, requested in feature_requests.items():
+        level = wavelet_level.get(band_name, 4) if isinstance(wavelet_level, dict) else wavelet_level
+        all_node_paths = tuple("".join(chars) for chars in product("ad", repeat=level))
         expected.update(f"{band_name}__{name}" for name in requested)
         if "H_wp" in requested:
             expected.update(f"{band_name}__R_wp_{path}" for path in all_node_paths)
@@ -116,7 +116,7 @@ def validate_completed_file(
     rows_log: list[dict[str, object]],
     windows: list[tuple[int, int, int, int, int]],
     feature_requests: dict[str, frozenset[str]],
-    wavelet_level: int,
+    wavelet_level: int | dict[str, int],
 ) -> list[str]:
     """Strict success gate used before CSV output and processed-log updates."""
     errors: list[str] = []
@@ -524,6 +524,8 @@ def build_params_for_band(band: tuple[float, float], sample_rate: float) -> Any:
     # to 30 kHz and f2 is searched in the same full context up to 60 kHz.
     ridge_main = _safe_band(low, min(low + 0.65 * span, 50_000.0, high), nyq)
     ridge_h2 = _safe_band(max(100.0, low * 2.0), min(high, 100_000.0, nyq * 0.995), nyq)
+    effective_rate = min(float(sample_rate), max(4_000.0, 3.0 * high))
+    wpt_level = infer_wavelet_level(effective_rate)
     return replace(
         DEFAULT_FEATURE_PARAMS,
         # The outer whole-file preprocessing already removes drift.  Keep the per-band setting
@@ -537,6 +539,7 @@ def build_params_for_band(band: tuple[float, float], sample_rate: float) -> Any:
         harmonic_band_hz=harmonic_band,
         ridge_main_search_hz=ridge_main,
         ridge_h2_search_hz=ridge_h2,
+        wavelet_level=wpt_level,
         n_jobs=1,
     )
 
@@ -1529,7 +1532,7 @@ def build_sliding_window_dataset(
                 rows_log,
                 windows,
                 feature_requests,
-                next(iter(params_map.values())).wavelet_level,
+                {name: params.wavelet_level for name, params in params_map.items()},
             )
             if completion_errors:
                 stats['failed'] += 1

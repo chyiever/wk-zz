@@ -85,15 +85,13 @@ class FeatureParams:
     ridge_relative_bandwidth: float = 0.08
     ridge_valid_energy_ratio: float = 0.2
     ridge_fixed_band_hz: float = 1_000.0
-    background_fraction: float = 0.20
-    observable_snr_db: float = 3.0
     bulge_threshold_ratio: float = 0.6
     bulge_min_distance_ms: float = 0.2
     residual_abnormal_threshold: float = 0.55
     local_window_ms: float = 0.4
     asymmetry_window_ms: float = 0.6
     wavelet_name: str = "db4"
-    wavelet_level: int = 4
+    wavelet_level: int = 0
     renyi_alpha: float = 2.0
     damped_freqs_hz: tuple[float, ...] = (8_000.0, 12_000.0, 16_000.0, 20_000.0, 25_000.0, 30_000.0, 35_000.0, 40_000.0, 45_000.0)
     damped_decay_ms: tuple[float, ...] = (0.1, 0.2, 0.4, 0.8, 1.2, 2.0)

@@ -395,13 +395,24 @@ def compute_wavelet_node_energies(
             ratio = Fraction(target_rate / float(sample_rate)).limit_denominator(10_000)
             work = signal.resample_poly(work, ratio.numerator, ratio.denominator)
             effective_rate = float(sample_rate) * ratio.numerator / ratio.denominator
-    packet = pywt.WaveletPacket(data=work, wavelet=wavelet_name, mode="symmetric", maxlevel=level)
+    if level is None or int(level) <= 0:
+        level = infer_wavelet_level(effective_rate)
+    packet = pywt.WaveletPacket(data=work, wavelet=wavelet_name, mode="symmetric", maxlevel=int(level))
     nodes = packet.get_level(level, order="freq")
     energies = {
         node.path: float(np.sum(np.asarray(node.data, dtype=float) ** 2, dtype=np.float64))
         for node in nodes
     }
     return (energies, effective_rate) if return_sample_rate else energies
+
+
+def infer_wavelet_level(sample_rate: float, terminal_bandwidth_hz: float = 8_000.0,
+                        min_level: int = 2, max_level: int = 8) -> int:
+    """Choose WPT level so terminal subband width is close to target bandwidth."""
+    fs = max(float(sample_rate), 1.0)
+    target = max(float(terminal_bandwidth_hz), 1.0)
+    level = int(math.ceil(math.log2(fs / (2.0 * target)))) if fs > 2.0 * target else min_level
+    return max(int(min_level), min(int(max_level), level))
 
 
 def build_context(record: FeatureRecord, params: FeatureParams) -> FeatureContext:
@@ -438,8 +449,11 @@ def build_context(record: FeatureRecord, params: FeatureParams) -> FeatureContex
         residual_complex, record.sample_rate, params.stft_window_ms, params.stft_overlap,
         backend=stft_backend, length=main_signal.size,
     )
+    wavelet_level = params.wavelet_level if params.wavelet_level > 0 else infer_wavelet_level(
+        min(record.sample_rate, max(4_000.0, 3.0 * params.main_band_hz[1]))
+    )
     node_energies, wavelet_sample_rate = compute_wavelet_node_energies(
-        main_signal, params.wavelet_name, params.wavelet_level,
+        main_signal, params.wavelet_name, wavelet_level,
         record.sample_rate, params.main_band_hz, return_sample_rate=True,
     )
 

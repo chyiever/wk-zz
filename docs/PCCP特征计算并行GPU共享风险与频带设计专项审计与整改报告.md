@@ -704,7 +704,7 @@ BANDS = [
 | S1/S2 | WPT 节点映射与尺度 | WPT 前按主带上限降采样到约 `max(4 kHz, 3·f_high)`（不超过原采样率）；四层节点使用 PyWavelets `order="freq"` 的显式频率序号计算中心频率，禁止把 `a/d` 路径直接当二进制频率码 | 已修复 |
 | S1 严重 | 阻尼原子固定零时刻、零相位 | 原子改为因果起振；候选起点包含事件 onset 和残差包络峰值；每个 `(t0,f,τ)` 同时投影正弦/余弦正交子空间，匹配结果对任意相位不偏置 | 已修复 |
 | S2 中等 | GPU/多进程争用 | Torch STFT 仍在主进程集中 GPU batch；worker 的配对逆变换使用 Torch CPU（同库同约定），不为每个进程创建竞争的 CUDA 逆变换上下文 | 已修复 |
-| S2 中等 | 弱高频被解释为物理零 | 新增 `SNR_band_db`、`E_excess`、`SNR_high_db`、`high_observable`、`H2_observable`；默认阈值 3 dB。不可观测时相关衰减/二倍频量写 NaN，并由质量标志解释 | 已修复 |
+| S2 中等 | 弱高频被解释为物理零 | 保留 `SNR_band_db`、`E_excess`、`SNR_high_db` 描述性统计；删除 3 dB 二值门限及其 NaN 门控 | 已整改 |
 
 ### C.3 修复后的数学契约
 
@@ -753,7 +753,7 @@ SNR_B=10\log_{10}\frac{\bar E_{event,B}+\varepsilon}{\bar E_{background,B}+\vare
 E_{excess,B}=\max\left(\sum_{m\in event}E_B[m]-N_{event}\bar E_{background,B},0\right).
 \]
 
-背景帧优先取事件边界之外的帧；若不足窗口的 20%，回退为窗口前 20%。这只是局部可观测性估计，不是分类标签。`high_observable=0` 时 `beta_H/T_half_high` 为 NaN；`H2_observable` 使用二倍频脊线邻域自身的事件/背景 SNR，若为 0，则 `H2_ratio/R_2_1/R_h/epsilon_2x/C_h` 为 NaN。
+背景帧优先取事件边界之外的帧；若不足窗口的 20%，回退为窗口前 20%。SNR/E_excess 仅是局部背景描述，不再触发任何二值门限、特征跳过或 NaN 门控。
 
 ### C.4 修复后的频带与特征族建议
 
@@ -767,7 +767,7 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 | 1–5 kHz | time、spectral、ridge、background | 低频共振；当前频率 bin 数仍较少，解释时需标注分辨率 |
 | 5–15 kHz | time、spectral、ridge、background | 主要结构共振和主脊线候选带 |
 | 15–30 kHz | time、spectral、ridge、residual、background | 中高频瞬态及可产生 30–60 kHz 二倍频的基频候选 |
-| 30–60 kHz | time、spectral、residual、background | 弱高频冲击/衰减；必须联用 `SNR_high_db/high_observable`，不输出带内二倍频 |
+| 30–60 kHz | time、spectral、residual、background | 弱高频冲击/衰减；联用描述性 `SNR_high_db`，不设置硬门限 |
 
 如后续实测消融显示需要 5–30 kHz 汇总带，可作为额外重叠带增加，但不建议恢复原来的重叠窄带全集。当前预处理先去均值，再采用 **100 Hz 高通**，并以 105 kHz 低通作为 100 kHz 目标通带的过渡余量；若传感器/前端 100 kHz 以上没有可信响应，应基于实测频响收紧上限，而非仅靠软件扩大通带。
 
@@ -840,10 +840,7 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 - `SNR_band_db`：当前频带事件帧平均能量相对背景帧平均能量的 dB 值；
 - `E_excess`：事件段能量减去背景均值基线后的非负超额能量；
 - `SNR_high_db`：当前频带内部高频子带的局部背景 SNR；
-- `high_observable`：高频 SNR 达到默认 3 dB 且事件能量有效时为 1，否则为 0；
-- `H2_observable`：二倍频脊线邻域自身的事件/背景 SNR 达到 3 dB 且存在有效二倍频能量时为 1。
-
-当 `high_observable=0`，`beta_H`、`T_half_high` 输出 NaN；当 `H2_observable=0`，二倍频比值/偏差类特征输出 NaN。NaN 在这里表示“不可观测”，不是算法异常，也不是物理零。
+- 3 dB 高频/二倍频二值门限已删除；SNR 低时仍输出数值特征，避免把背景变化误判为物理零或算法缺失。
 
 ### D.4 “CPU/GPU、单窗/batch、1/N worker 全量回归”是什么？
 
@@ -892,13 +889,13 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 | P0 | Windows 多进程、共享内存、长文件和异常恢复未做生产压力验证 | 可能出现句柄/page file 峰值、重试不完整或重复追加；需做长文件、worker 崩溃、OOM 和中断恢复测试 |
 | P1 | 100 Hz–1 kHz 仍没有长窗/低采样率 STFT | 当前仅输出 classic/time/background；低频谱熵、MFCC、谱延展度需多分辨率路径后再启用 |
 | P1 | `Q_MP` CUDA Hankel SVD 仍可能使用 float32 | 需做 CPU float64 对照；弱高频或病态矩阵可能有差异 |
-| P1 | 3 dB 高频/二倍频门限尚未用真实背景标定 | 应按传感器、工况、采集批次统计可观测率并做门限敏感性分析 |
+| P1 | 3 dB 高频/二倍频门限尚未用真实背景标定 | 已删除二值门限；后续改为统计 SNR/E_excess 分布并评估模型鲁棒性 |
 | P1 | 背景不足时回退窗口前 20% 可能污染事件背景 | 建议加入邻近无事件窗口、低能量分位背景和 background-quality 标志 |
 | P1 | `mean`、`variance/rms`、多个峰值因子及多种熵存在相关性 | 公式没有错误，但可能增加共线性；训练集内做相关聚类、稳定性和消融 |
 | P1 | MFCC 尚未做传感器频响校准 | 跨通道/跨安装位置可能不可比；需做校准和跨设备稳定性测试 |
 | P2 | `energy_entropy` 是 8 段等时分解，不是 EMD/VMD/DWT 分量熵 | 文档已明确命名；若以后使用分解算法，应另设独立特征名 |
 | P2 | 窄带频率 bin 数不足时谱熵/MFCC/延展度稳定性有限 | 输出有效 bin 数元数据并设置最小 bin 门限 |
-| P2 | WPT 当前仍固定四层，终端子带宽度跨带不完全等效 | 应按目标终端带宽反推 level，而不是永远固定 level=4 |
+| P2 | WPT 当前仍固定四层，终端子带宽跨带不完全等效 | 已按目标终端带宽自动反推 level（2–8 层）；仍需跨采样率边界回归 |
 | P2 | `H_stack` 已修复重叠计能，但需边界频率解析验证 | 对 1x/2x/3x 谐波扫频，确认不超过总能量且边界行为连续 |
 | P2 | 多分辨率实现后不能继续把所有频带放进一个 STFT batch | 按 `(sample_rate,nperseg,hop,nfft)` 分组 batch |
 | P3 | CSV 与 processed log 尚非事务性提交 | 增加 source manifest、临时文件和原子 rename，避免重跑重复追加 |
@@ -923,3 +920,17 @@ DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“�
 ### E.5 发布判定
 
 只有 P0 测试全部通过、flow/BK/QJ 全部使用 v5 schema 重算、逐列误差/NaN 状态通过门限、能量守恒成立、背景可观测性经过真实数据抽检，并完成新增特征的训练集内消融后，才可把结果作为正式训练基线。在此之前可以使用 GPU/共享做性能测试，但不应把未经门禁确认的结果作为最终模型数据。
+## 附录 F：本次整改结论（2026-09-10）
+
+### F.1 已完成
+
+- 删除 3 dB 高频和二倍频可观测二值门限；`SNR_band_db`、`SNR_high_db`、`E_excess` 仅保留为描述性质量统计。低 SNR 不再触发特征置 NaN 或跳过计算。
+- WPT 层数改为按有效采样率和目标终端子带宽自动推断：
+  $L=\mathrm{clip}(\lceil\log_2(f_{s,eff}/(2\Delta f_{target}))\rceil,2,8)$，默认 $\Delta f_{target}=8$ kHz；节点仍按频率顺序映射。
+- schema 升级为 `pccp-v6-band100k-no-snr-gate-wpt-auto-20260910`，特征字典同步更新。
+
+### F.2 尚需验证（P1）
+
+- 使用多批真实背景检查 SNR/E_excess 分布稳定性，并确认删除门限后模型不会依赖单一背景工况。
+- 对不同采样率、主带上限和短窗口执行 WPT 终端带宽误差测试（目标误差建议不超过一个终端节点宽度）。
+- CPU/GPU、单窗/batch、1/N worker 全量回归，核对新 schema 列集合、数值容差及 processed-log 成功判据。

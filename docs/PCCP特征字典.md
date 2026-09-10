@@ -3,7 +3,7 @@
 本文档是 PCCP 断丝信号特征挖掘所用候选特征的完整字典表，包含公式、中英文名称、代码变量名与物理意义。
 代码实现见 `src/fea_cpt_gpu_v2_2/features.py`（`DATA09_v0-flow_feature_extraction.ipynb`、`DATA09_v0-qj` 样本特征提取等实际调用的版本），中文含义映射见 `src/pccp_feature_mining/feature_schema.py` 的 `BASE_FEATURE_MEANINGS`。
 
-> 条目说明：原表按 65 行计（`R_wp_*` 记为 1 行）。当前 schema `pccp-v5-band100k-stat-entropy-20260910` 已增加经典统计、熵、MFCC 和可观测性特征，并按**频带适用的特征族输出**；不再把全部特征机械复制到每个频带。当前 8 带动态特征列合计 563 列，实际列数由 `feature_families_by_band` 决定。
+> 条目说明：原表按 65 行计（`R_wp_*` 记为 1 行）。当前 schema `pccp-v6-band100k-no-snr-gate-wpt-auto-20260910` 已增加经典统计、熵、MFCC，并按**频带适用的特征族输出**；不再把全部特征机械复制到每个频带。3 dB 高频/二倍频二值可观测门限已删除，SNR 仅作描述性统计。WPT 分解层数按目标终端带宽自动推断，当前 8 带动态特征列数由 `feature_families_by_band` 和各带层数决定。
 
 ## 符号约定
 
@@ -79,7 +79,7 @@
 | 57 | `R_wp_*` | 小波包节点能量占比 | Wavelet Packet Node Ratio | $R_{\text{wp},i}=\dfrac{E_{\text{wp},i}}{\sum_j E_{\text{wp},j}}$ | 各小波包子带能量占全谱（小波域）比例 |
 | 58 | `H_wp` | 小波包熵 | Wavelet Packet Entropy | $H_{\text{wp}}=-\sum_i p_i\ln p_i$ | 小波包能量分布扩散度 |
 | 59 | `I_burst` | 小波包子带能量集中度 | Subband Energy Concentration | $I_{\text{burst}}=\dfrac{\max(E_{\text{wp}})}{\mathrm{median}(E_{\text{wp}})}$ | 能量在子带间的集中度（跨子带 max/median），与"时间域突发性"无关 |
-| 60 | `D_WPT` | 高频-低频能差 | WPT High-Low Difference | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in LF}p_i$ | WPT 前按主带上限自适应降采样（目标约为 $\max(4\text{kHz},3f_H)$，且不超过原采样率）；节点按 PyWavelets `order="freq"` 的显式频率次序映射，HF/LF 以主带几何中点划分 |
+| 60 | `D_WPT` | 高频-低频能差 | WPT High-Low Difference | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in LF}p_i$ | WPT 前按主带上限自适应降采样；层数 $L=\mathrm{clip}(\lceil\log_2(f_{s,eff}/(2\Delta f_{target}))\rceil,2,8)$，默认目标终端带宽 $\Delta f_{target}=8$ kHz；节点按 `order="freq"` 映射 |
 | 61 | `C_damp` | 阻尼原子匹配度 | Damped Atom Match | $g(t)=\mathbf1_{t\ge t_0}e^{-(t-t_0)/\tau}\cos(2\pi f(t-t_0)+\phi)$，$C_{\text{damp}}=\max_{t_0,f,\tau,\phi}\dfrac{\lvert\langle r,g\rangle\rvert}{\lVert r\rVert\lVert g\rVert}$ | 原子从候选事件起点/残差峰值起振，并以正交正弦—余弦基消除固定零相位偏置 |
 | 62 | `alpha_hat` | 估计阻尼系数 | Damping Coefficient | $\log e_{\text{res}}(t)\approx-\hat\alpha t+b,\ t\in[t_p,t_{off}]$ | 残差包络对数在**峰后衰减段**线性拟合的斜率，测衰减速度（不混入上升段） |
 | 63 | `Q_MP` | Hankel 低秩重建质量 | Hankel Low-rank Quality | 基于残差的 Hankel 矩阵秩 2 SVD 最优近似的重建质量 | 残差能否用单个阻尼振荡解释的度量（**非矩阵铅笔法**，无需估计极点） |
@@ -93,8 +93,7 @@
 | `SNR_band_db` | 当前频带局部背景信噪比 | $10\log_{10}\dfrac{\bar E_{\mathrm{event}}+\varepsilon}{\bar E_{\mathrm{bg}}+\varepsilon}$ | 事件段由包络边界映射到 STFT 帧；背景不足时取窗口前 20% 作为局部背景 |
 | `E_excess` | 超额能量 | $\max(\sum_{t\in event}E_B(t)-N_{event}\bar E_{bg},0)$ | 扣除局部背景基线后保留的非负能量，适合高频能量自然衰减场景 |
 | `SNR_high_db` | 高频子带局部背景信噪比 | $10\log_{10}\dfrac{\bar E_{H,event}+\varepsilon}{\bar E_{H,bg}+\varepsilon}$ | 判断当前频带内部高频子带是否达到可解释水平 |
-| `high_observable` | 高频可观测标志 | $\mathbf1(SNR_{high}\ge3\,\mathrm{dB}\land \bar E_{H,event}>\varepsilon)$ | 为 0 时 `beta_H`、`T_half_high` 输出 `NaN`，不把不可测误写成物理零值 |
-| `H2_observable` | 二倍频可观测标志 | $\mathbf1(SNR_{2nd}\ge3\,\mathrm{dB}\land \bar E_{2,event}>\varepsilon)$ | `SNR_2nd` 使用二倍频脊线邻域的事件/背景帧能量；只在明确的宽带谐波上下文计算，为 0 时二倍频比值/偏差类量输出 `NaN` |
+| （已删除） | 3 dB 高频/二倍频可观测门限 | 不再定义二值门限 | 真实背景多变，`SNR_band_db`、`SNR_high_db`、`E_excess` 仅作为描述性质量统计，不触发 NaN 或跳过特征计算 |
 
 ### 经典统计、熵与倒谱增补特征（2026-09-10）
 
@@ -131,7 +130,7 @@ CSV 列名仍采用 `b_<band>__<base>`，但特征按物理适用的族选择，
 - `beta_H`、`alpha_hat` 为**峰后窗拟合**（$t\in[t_p,t_{off}]$），避免全窗拟合混入能量上升段；高频不可观测时衰减量返回 `NaN`。
 - `STFT/ISTFT` 必须成对使用同一库与完全一致的窗、步长、中心化及长度约定；Torch 批量前向在主进程集中执行，worker 使用 Torch CPU 逆变换，避免多进程争用 CUDA 上下文。
 - `E_total`、`E_harm`、`E_res` 统一取当前规范带通信号的同一 STFT 频率范围，并用 `float64` 累加；唯一残差为 `ISTFT((1-M_h)X_B)`。
-- WPT 四层分解前按当前主带上限自适应降采样，节点中心频率依据 `order="freq"` 返回位置而非 `a/d` 路径二进制直译。
+- WPT 分解层数不再固定为四层：按有效采样率和目标终端子带宽自动选择（默认约 8 kHz，限制 2–8 层），节点中心频率依据 `order="freq"` 返回位置而非 `a/d` 路径二进制直译。
 - 阻尼原子以事件起点/残差峰值为候选 $t_0$，并同时投影正弦、余弦基以消除起点和相位偏置。
 - `F_peak` 按**逐频点正增量（半波整流）再求和**计算，首帧通量置 0。
 - `T_half_high` 为**峰后衰减时长**，峰后从未跌破 50% 时返回 `NaN`。
@@ -175,3 +174,4 @@ CSV 列名仍采用 `b_<band>__<base>`，但特征按物理适用的族选择，
 | 2026-09-10 | 无偏/口径说明 | — | 补注 `Sk_env`/`K_loc` 等无偏估计、`R_td` 能量分位边界、`T_half_high` NaN、`eta_dict` 波形口径 |
 | 2026-09-10 | 经典统计/熵/倒谱增补 | 均值、方差、RMS、脉冲/裕度因子、排列熵、奇异谱熵、频谱延展度、功率谱熵、分解能量熵和 MFCC 缺失或仅有近似量 | 新增 `classic`、`entropy`、`cepstral` 特征族；低频 100 Hz–1 kHz 因当前短窗频率分辨率不足暂不输出谱类增补 |
 | 2026-09-10 | schema 与频带更新 | 关注上限为 60 kHz，schema 为 v4 | 预处理先去均值再 100 Hz 高通，目标关注上限扩展至 100 kHz，schema 升级为 `pccp-v5-band100k-stat-entropy-20260910` |
+| 2026-09-10 | 门限与 WPT 整改 | 3 dB 高频/二倍频门限导致真实背景变化时误判；WPT 固定四层 | 删除二值可观测门限，保留 SNR/E_excess 描述量；WPT 按目标终端带宽自动推断层数，schema 升级为 `pccp-v6-band100k-no-snr-gate-wpt-auto-20260910` |

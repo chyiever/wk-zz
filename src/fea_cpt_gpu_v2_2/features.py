@@ -50,7 +50,7 @@ FEATURE_FAMILIES: dict[str, frozenset[str]] = {
         "Delta_f_span", "C_f",
     }),
     "harmonic": frozenset({
-        "H2_ratio", "H2_observable", "R_2_1", "H_stack", "R_h", "epsilon_2x", "C_h", "R_harm",
+        "H2_ratio", "R_2_1", "H_stack", "R_h", "epsilon_2x", "C_h", "R_harm",
         "E_harm",
     }),
     "residual": frozenset({
@@ -58,7 +58,7 @@ FEATURE_FAMILIES: dict[str, frozenset[str]] = {
         "K_res_max", "CF_res", "SC_res_mean", "k_res_sc", "R_res_hl_mean", "k_res_hl",
         "S_res_env", "eta_asym", "T_half_high",
     }),
-    "background": frozenset({"SNR_band_db", "E_excess", "SNR_high_db", "high_observable"}),
+    "background": frozenset({"SNR_band_db", "E_excess", "SNR_high_db"}),
     "wavelet": frozenset({"H_wp", "I_burst", "D_WPT"}),
     "damped": frozenset({"C_damp", "alpha_hat", "Q_MP", "Delta_J", "eta_dict"}),
 }
@@ -438,7 +438,7 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     frame_energy = np.sum(context.stft_power, axis=0, dtype=np.float64) if context.stft_power.size else np.zeros(0)
     event_frames = ((context.stft_times >= on_t) & (context.stft_times <= off_t)) if context.stft_times.size else np.zeros(0, dtype=bool)
     background_frames = ~event_frames if event_frames.size else np.zeros(0, dtype=bool)
-    min_bg = max(1, int(math.ceil(params.background_fraction * len(frame_energy)))) if frame_energy.size else 0
+    min_bg = max(1, int(math.ceil(0.20 * len(frame_energy)))) if frame_energy.size else 0
     if frame_energy.size and np.sum(background_frames) < min_bg:
         background_frames = np.zeros(len(frame_energy), dtype=bool)
         background_frames[:min_bg] = True
@@ -451,7 +451,6 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     high_bg = float(np.mean(high_frame_energy[background_frames])) if high_frame_energy.size and np.any(background_frames) else 0.0
     high_event = float(np.mean(high_frame_energy[event_frames])) if high_frame_energy.size and np.any(event_frames) else 0.0
     features["SNR_high_db"] = float(10.0 * np.log10((high_event + eps) / (high_bg + eps)))
-    features["high_observable"] = float(features["SNR_high_db"] >= params.observable_snr_db and high_event > eps)
 
     # 帧有效性（主带帧能量门限），rho_r 与后续脊线统计共用
     active = _ridge_active_frames(context)
@@ -498,11 +497,6 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     features["R_2_1"] = float(e2 / (e1 + eps))
     h2_bg = float(np.mean(e2_per_frame[background_frames])) if e2_per_frame.size and np.any(background_frames) else 0.0
     h2_event = float(np.mean(e2_per_frame[event_frames])) if e2_per_frame.size and np.any(event_frames) else 0.0
-    h2_snr_db = float(10.0 * np.log10((h2_event + eps) / (h2_bg + eps)))
-    features["H2_observable"] = float(
-        h2_event > eps and np.any(context.ridge_f2 > 0.0)
-        and h2_snr_db >= params.observable_snr_db
-    )
 
     # H_stack：1×/2×/3×f1 谐波位置 ±相对带宽 带内积分
     harmonic_stack = 0.0
@@ -530,9 +524,6 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
 
     features["epsilon_2x"] = float(np.median(diff_h2[active] / (context.ridge_f1[active] + eps))) if np.any(active) else 0.0
     features["C_h"] = float(np.mean(diff_h2[active])) if np.any(active) else 0.0
-    if not bool(features["H2_observable"]):
-        for key in ("H2_ratio", "R_2_1", "R_h", "epsilon_2x", "C_h"):
-            features[key] = float("nan")
     features["R_harm"] = float(context.harmonic_energy / (context.total_energy_tf + eps))
     features["Ridge_coh"] = features["R_harm"]  # 兼容别名列：与 R_harm 同值，已停用（不参与模型选择）
 
@@ -601,9 +592,6 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     if below.size:
         features["T_half_high"] = float(below[0] / fs)
     else:
-        features["T_half_high"] = float("nan")
-    if not bool(features["high_observable"]):
-        features["beta_H"] = float("nan")
         features["T_half_high"] = float("nan")
 
     sc_res = _spectral_centroid(context.stft_freqs, context.residual_power, eps)
