@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+from fractions import Fraction
 
 import numpy as np
 import pywt
@@ -45,6 +46,11 @@ def _init_gpu_stft():
         _torch_available = False
         _torch = None
     return _torch_available
+
+
+def active_stft_backend() -> str:
+    """Return the backend used by :func:`compute_stft_power`."""
+    return "torch" if _torch_available else "scipy"
 
 
 _init_gpu_stft()
@@ -148,22 +154,28 @@ def _stft_gpu(values: np.ndarray, sample_rate: float, window_ms: float, overlap:
             win_length=nperseg,
             window=window_tensor,
             center=True,
-            pad_mode='reflect',
+            pad_mode='constant',
             normalized=False,
             onesided=True,
             return_complex=True,
         )
         
         # 转回 CPU numpy: (n_windows, n_freq, n_time)
-        spec_cpu = spec.cpu().numpy()
-        power = np.abs(spec_cpu) ** 2
+        # Match scipy.signal.stft(scaling="spectrum"): SciPy divides the FFT coefficients by
+        # sum(window).  Keeping that scale makes CPU/GPU absolute energy features comparable.
+        spectrum_scale = float(window_tensor.sum().item())
+        spec_cpu = spec.cpu().numpy() / spectrum_scale
+        # Keep all downstream power statistics in float64.  This is particularly important for
+        # the weak 30-60 kHz tail and for ratios/logarithms with small denominators.
+        power = np.abs(spec_cpu.astype(np.complex128, copy=False)) ** 2
 
         # 频率轴（不变）
         freqs = np.fft.rfftfreq(nfft, d=1.0 / sample_rate)
         # 时间轴（不变）
         hop_length = nperseg - noverlap
         n_frames = spec_cpu.shape[-1]
-        times = (np.arange(n_frames) * hop_length + nperseg // 2) / sample_rate
+        # With center=True, torch frame m is centred at m*hop in the original signal.
+        times = np.arange(n_frames, dtype=float) * hop_length / sample_rate
         
         return freqs, times, spec_cpu, power
     else:
@@ -179,22 +191,23 @@ def _stft_gpu(values: np.ndarray, sample_rate: float, window_ms: float, overlap:
             win_length=nperseg,
             window=window_tensor,
             center=True,
-            pad_mode='reflect',
+            pad_mode='constant',
             normalized=False,
             onesided=True,
             return_complex=True,
         )
 
         # 转回 CPU numpy
-        spec_cpu = spec.cpu().numpy()
-        power = np.abs(spec_cpu) ** 2
+        spectrum_scale = float(window_tensor.sum().item())
+        spec_cpu = spec.cpu().numpy() / spectrum_scale
+        power = np.abs(spec_cpu.astype(np.complex128, copy=False)) ** 2
 
         # 频率轴
         freqs = np.fft.rfftfreq(nfft, d=1.0 / sample_rate)
         # 时间轴
         hop_length = nperseg - noverlap
         n_frames = spec_cpu.shape[-1]
-        times = (np.arange(n_frames) * hop_length + nperseg // 2) / sample_rate
+        times = np.arange(n_frames, dtype=float) * hop_length / sample_rate
 
         return freqs, times, spec_cpu, power
 
@@ -221,7 +234,7 @@ def compute_stft_power(values: np.ndarray, sample_rate: float, window_ms: float,
         boundary="zeros",
         padded=True,
     )
-    power = np.abs(complex_spec) ** 2
+    power = np.abs(np.asarray(complex_spec, dtype=np.complex128)) ** 2
     return freqs, times, complex_spec, power
 
 
@@ -272,27 +285,123 @@ def build_ridge_mask(freqs: np.ndarray, ridge_f1: np.ndarray, ridge_f2: np.ndarr
     return mask
 
 
-def reconstruct_from_mask(complex_spec: np.ndarray, mask: np.ndarray, sample_rate: float, window_ms: float, overlap: float) -> np.ndarray:
-    """Inverse-STFT reconstruction from a time-frequency mask."""
+def inverse_stft(
+    complex_spec: np.ndarray,
+    sample_rate: float,
+    window_ms: float,
+    overlap: float,
+    *,
+    backend: str,
+    length: int | None = None,
+) -> np.ndarray:
+    """Invert an STFT with the same library and conventions used by the forward transform."""
     nperseg = max(16, int(round(sample_rate * window_ms / 1_000.0)))
     noverlap = min(nperseg - 1, int(round(nperseg * overlap)))
+    nfft = max(nperseg, 2 * (complex_spec.shape[-2] - 1))
+    hop_length = nperseg - noverlap
+
+    if backend in {"torch", "torch_cpu"}:
+        if _torch is None:
+            raise RuntimeError("Torch STFT cannot be inverted because torch is unavailable")
+        # GPU work is centralised in the producer.  Multiprocessing workers use Torch on CPU for
+        # ISTFT (same transform implementation/conventions, no competing CUDA contexts).
+        device = _torch.device("cpu") if backend == "torch_cpu" else (
+            _device if _device is not None else _torch.device("cpu")
+        )
+        tensor = _torch.as_tensor(complex_spec, device=device)
+        if backend == "torch_cpu":
+            tensor = tensor.to(dtype=_torch.complex128)
+        window_tensor = _torch.hann_window(
+            nperseg, periodic=True, device=device,
+            dtype=_torch.float64 if tensor.dtype == _torch.complex128 else _torch.float32,
+        )
+        # Forward Torch coefficients are stored at SciPy's ``scaling="spectrum"`` scale.
+        # torch.istft expects unscaled FFT coefficients, so undo exactly that one scale here.
+        tensor = tensor * window_tensor.sum()
+        reconstructed = _torch.istft(
+            tensor,
+            n_fft=nfft,
+            hop_length=hop_length,
+            win_length=nperseg,
+            window=window_tensor,
+            center=True,
+            normalized=False,
+            onesided=True,
+            length=length,
+        )
+        return reconstructed.detach().cpu().numpy().astype(float, copy=False)
+
+    if backend != "scipy":
+        raise ValueError(f"Unsupported STFT backend: {backend}")
     _, reconstructed = signal.istft(
-        complex_spec * mask,
+        complex_spec,
         fs=sample_rate,
         window="hann",
         nperseg=nperseg,
         noverlap=noverlap,
+        nfft=nfft,
         input_onesided=True,
         boundary=True,
     )
-    return np.asarray(reconstructed, dtype=float)
+    reconstructed = np.asarray(reconstructed, dtype=float)
+    if length is not None:
+        if reconstructed.size < length:
+            reconstructed = np.pad(reconstructed, (0, length - reconstructed.size))
+        reconstructed = reconstructed[:length]
+    return reconstructed
 
 
-def compute_wavelet_node_energies(values: np.ndarray, wavelet_name: str, level: int) -> dict[str, float]:
-    """Wavelet packet terminal node energies."""
-    packet = pywt.WaveletPacket(data=values, wavelet=wavelet_name, mode="symmetric", maxlevel=level)
+def reconstruct_from_mask(
+    complex_spec: np.ndarray,
+    mask: np.ndarray,
+    sample_rate: float,
+    window_ms: float,
+    overlap: float,
+    *,
+    backend: str | None = None,
+    length: int | None = None,
+) -> np.ndarray:
+    """Inverse-STFT reconstruction from a mask using a paired backend."""
+    return inverse_stft(
+        complex_spec * mask,
+        sample_rate,
+        window_ms,
+        overlap,
+        backend=backend or active_stft_backend(),
+        length=length,
+    )
+
+
+def compute_wavelet_node_energies(
+    values: np.ndarray,
+    wavelet_name: str,
+    level: int,
+    sample_rate: float | None = None,
+    band_hz: tuple[float, float] | None = None,
+    *,
+    return_sample_rate: bool = False,
+) -> dict[str, float] | tuple[dict[str, float], float]:
+    """Wavelet-packet energies at a band-adapted sampling rate.
+
+    A fixed level at 1 MHz creates 31.25 kHz terminal bands at level four.  When physical band
+    metadata is supplied, downsample to roughly three times the passband upper edge first, leaving
+    anti-alias headroom while making the WPT scale meaningful for low and mid frequencies.
+    """
+    work = np.asarray(values, dtype=float)
+    effective_rate = float(sample_rate) if sample_rate is not None else 1.0
+    if sample_rate is not None and band_hz is not None:
+        target_rate = min(float(sample_rate), max(4_000.0, 3.0 * float(band_hz[1])))
+        if target_rate < 0.95 * float(sample_rate):
+            ratio = Fraction(target_rate / float(sample_rate)).limit_denominator(10_000)
+            work = signal.resample_poly(work, ratio.numerator, ratio.denominator)
+            effective_rate = float(sample_rate) * ratio.numerator / ratio.denominator
+    packet = pywt.WaveletPacket(data=work, wavelet=wavelet_name, mode="symmetric", maxlevel=level)
     nodes = packet.get_level(level, order="freq")
-    return {node.path: float(np.sum(np.asarray(node.data, dtype=float) ** 2)) for node in nodes}
+    energies = {
+        node.path: float(np.sum(np.asarray(node.data, dtype=float) ** 2, dtype=np.float64))
+        for node in nodes
+    }
+    return (energies, effective_rate) if return_sample_rate else energies
 
 
 def build_context(record: FeatureRecord, params: FeatureParams) -> FeatureContext:
@@ -309,21 +418,30 @@ def build_context(record: FeatureRecord, params: FeatureParams) -> FeatureContex
     onset_index, offset_index = estimate_bounds_from_energy(envelope, params.onset_quantile, params.offset_quantile)
     envelope_fit = fit_bulge_envelope(envelope, peak_index, params.eps)
 
+    stft_backend = active_stft_backend()
     stft_freqs, stft_times, stft_complex, stft_power = compute_stft_power(main_signal, record.sample_rate, params.stft_window_ms, params.stft_overlap, params.stft_nfft)
     short_freqs, short_times, _, short_power = compute_stft_power(main_signal, record.sample_rate, params.short_stft_window_ms, params.short_stft_overlap, params.short_stft_nfft)
 
     ridge_f1, ridge_idx_f1 = _dynamic_programming_ridge(stft_freqs, stft_power, params.ridge_main_search_hz, params.ridge_jump_penalty_hz)
     ridge_f2, ridge_idx_f2 = _dynamic_programming_ridge(stft_freqs, stft_power, params.ridge_h2_search_hz, params.ridge_jump_penalty_hz, prior_hz=2.0 * ridge_f1 if ridge_f1.size else None)
     ridge_mask = build_ridge_mask(stft_freqs, ridge_f1, ridge_f2, params.ridge_relative_bandwidth)
-    residual_power = stft_power * (1.0 - ridge_mask)
-    total_energy_tf = float(np.sum(stft_power))
-    harmonic_energy = float(np.sum(stft_power * ridge_mask))
-    reconstructed = reconstruct_from_mask(stft_complex, ridge_mask, record.sample_rate, params.stft_window_ms, params.stft_overlap)
-    if reconstructed.size < main_signal.size:
-        reconstructed = np.pad(reconstructed, (0, main_signal.size - reconstructed.size))
-    reconstructed = reconstructed[: main_signal.size]
-    residual_signal = main_signal - reconstructed
-    node_energies = compute_wavelet_node_energies(main_signal, params.wavelet_name, params.wavelet_level)
+    harmonic_complex = stft_complex * ridge_mask
+    residual_complex = stft_complex * (1.0 - ridge_mask)
+    residual_power = np.abs(np.asarray(residual_complex, dtype=np.complex128)) ** 2
+    total_energy_tf = float(np.sum(stft_power, dtype=np.float64))
+    harmonic_energy = float(np.sum(np.abs(np.asarray(harmonic_complex, dtype=np.complex128)) ** 2, dtype=np.float64))
+    reconstructed = inverse_stft(
+        harmonic_complex, record.sample_rate, params.stft_window_ms, params.stft_overlap,
+        backend=stft_backend, length=main_signal.size,
+    )
+    residual_signal = inverse_stft(
+        residual_complex, record.sample_rate, params.stft_window_ms, params.stft_overlap,
+        backend=stft_backend, length=main_signal.size,
+    )
+    node_energies, wavelet_sample_rate = compute_wavelet_node_energies(
+        main_signal, params.wavelet_name, params.wavelet_level,
+        record.sample_rate, params.main_band_hz, return_sample_rate=True,
+    )
 
     return FeatureContext(
         record=record,
@@ -342,6 +460,7 @@ def build_context(record: FeatureRecord, params: FeatureParams) -> FeatureContex
         stft_times=stft_times,
         stft_complex=stft_complex,
         stft_power=stft_power,
+        stft_backend=stft_backend,
         short_freqs=short_freqs,
         short_times=short_times,
         short_power=short_power,
@@ -356,4 +475,5 @@ def build_context(record: FeatureRecord, params: FeatureParams) -> FeatureContex
         reconstructed_signal=reconstructed,
         residual_signal=residual_signal,
         wavelet_node_energies=node_energies,
+        wavelet_sample_rate=wavelet_sample_rate,
     )

@@ -19,6 +19,7 @@ import random
 import re
 import sys
 import time
+from itertools import product
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -29,13 +30,122 @@ from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
+from scipy import signal as sp_signal
 from tqdm.auto import tqdm
 
 from .base import FeatureContext, FeatureRecord
-from .features import compute_all_features
+from .features import FEATURE_FAMILIES, compute_all_features, feature_names_for_families
 from .gpu_backend import gpu_backend_info
 from .params import DEFAULT_FEATURE_PARAMS
-from .signal_ops import build_context, butter_filter, compute_stft_power
+from .signal_ops import active_stft_backend, build_context, butter_filter, compute_stft_power, inverse_stft, robust_normalize
+
+
+def _default_feature_families(
+    band_name: str,
+    band_hz: tuple[float, float],
+    harmonic_band_name: str,
+) -> tuple[str, ...]:
+    """Assign physically applicable feature families instead of an 80-feature Cartesian product."""
+    low, high = band_hz
+    if band_name == harmonic_band_name:
+        return tuple(FEATURE_FAMILIES)
+    if high <= 1_500.0:
+        # A 0.64 ms STFT at 1 MHz cannot resolve 100 Hz-1 kHz.  Keep waveform/background
+        # summaries here; low-frequency spectral features require the planned long-window group.
+        return ("time", "background")
+    if high <= 15_000.0:
+        return ("time", "spectral", "ridge", "background")
+    if low >= 30_000.0:
+        return ("time", "spectral", "residual", "background")
+    return ("time", "spectral", "ridge", "residual", "background")
+
+
+def build_feature_request_map(
+    params_map: dict[str, Any],
+    families_by_band: dict[str, tuple[str, ...]] | None = None,
+    harmonic_band_name: str | None = None,
+) -> tuple[dict[str, frozenset[str]], str]:
+    """Build per-band feature allowlists and choose one explicit cross-frequency harmonic context."""
+    if not params_map:
+        raise ValueError("params_map is empty")
+    if harmonic_band_name is None:
+        harmonic_band_name = max(
+            params_map,
+            key=lambda name: params_map[name].main_band_hz[1] - params_map[name].main_band_hz[0],
+        )
+    if harmonic_band_name not in params_map:
+        raise ValueError(f"harmonic_band_name not found: {harmonic_band_name}")
+    requests: dict[str, frozenset[str]] = {}
+    for name, params in params_map.items():
+        families = (
+            families_by_band[name]
+            if families_by_band is not None and name in families_by_band
+            else _default_feature_families(name, params.main_band_hz, harmonic_band_name)
+        )
+        if name != harmonic_band_name and "harmonic" in families:
+            raise ValueError(
+                f"harmonic family may only be emitted from {harmonic_band_name!r}; got {name!r}"
+            )
+        requests[name] = feature_names_for_families(families)
+    return requests, harmonic_band_name
+
+
+FEATURE_SCHEMA_VERSION = "pccp-v3-safe-shared-20260910"
+ALLOWED_NAN_BASE_FEATURES = frozenset({
+    "T_half_high", "alpha_hat", "beta_H", "H2_ratio", "R_2_1", "R_h", "epsilon_2x", "C_h",
+})
+
+
+def expected_output_features(
+    feature_requests: dict[str, frozenset[str]],
+    wavelet_level: int,
+) -> frozenset[str]:
+    """Return the exact required feature schema, including dynamic WPT node columns."""
+    expected: set[str] = set()
+    node_paths = ("".join(chars) for chars in product("ad", repeat=wavelet_level))
+    all_node_paths = tuple(node_paths)
+    for band_name, requested in feature_requests.items():
+        expected.update(f"{band_name}__{name}" for name in requested)
+        if "H_wp" in requested:
+            expected.update(f"{band_name}__R_wp_{path}" for path in all_node_paths)
+    return frozenset(expected)
+
+
+def validate_completed_file(
+    rows_features: list[dict[str, object]],
+    rows_log: list[dict[str, object]],
+    windows: list[tuple[int, int, int, int, int]],
+    feature_requests: dict[str, frozenset[str]],
+    wavelet_level: int,
+) -> list[str]:
+    """Strict success gate used before CSV output and processed-log updates."""
+    errors: list[str] = []
+    expected_ids = {int(window[0]) for window in windows}
+    actual_ids = {int(row.get("window_id", -1)) for row in rows_features}
+    if len(rows_features) != len(windows) or actual_ids != expected_ids:
+        errors.append(f"window_count_or_ids expected={len(windows)} actual={len(rows_features)}")
+    if len(rows_log) != len(windows):
+        errors.append(f"log_count expected={len(windows)} actual={len(rows_log)}")
+    worker_errors = [str(row.get("missing_selected_features", "")).strip() for row in rows_log]
+    worker_errors = [value for value in worker_errors if value]
+    if worker_errors:
+        errors.append(f"worker_errors={len(worker_errors)} first={worker_errors[0][:160]}")
+
+    expected = expected_output_features(feature_requests, wavelet_level)
+    for row in rows_features:
+        missing = expected - set(row)
+        if missing:
+            errors.append(f"window={row.get('window_id')} missing_features={len(missing)} first={sorted(missing)[:3]}")
+            break
+        for column in expected:
+            value = float(row[column])
+            base = column.split("__", 1)[-1]
+            if np.isinf(value) or (np.isnan(value) and base not in ALLOWED_NAN_BASE_FEATURES):
+                errors.append(f"window={row.get('window_id')} invalid_value={column}:{value}")
+                break
+        if errors:
+            break
+    return errors
 
 try:
     from scipy.signal import resample_poly
@@ -410,11 +520,15 @@ def build_params_for_band(band: tuple[float, float], sample_rate: float) -> Any:
     high1_band = _safe_band(low + 0.50 * span, low + 0.80 * span, nyq)
     high2_band = _safe_band(low + 0.60 * span, high, nyq)
     harmonic_band = _safe_band(low + 0.50 * span, high, nyq)
-    ridge_main = _safe_band(low, low + 0.65 * span, nyq)
-    ridge_h2 = _safe_band(max(low * 2.0, low + 0.20 * span), min(high * 2.0, nyq * 0.995), nyq)
+    # Observable harmonic contract for the known 100 Hz-60 kHz PCCP range: f1 is meaningful up
+    # to 30 kHz and f2 is searched in the same full context up to 60 kHz.
+    ridge_main = _safe_band(low, min(low + 0.65 * span, 30_000.0, high), nyq)
+    ridge_h2 = _safe_band(max(100.0, low * 2.0), min(high, 60_000.0, nyq * 0.995), nyq)
     return replace(
         DEFAULT_FEATURE_PARAMS,
-        highpass_hz=1_000.0,
+        # The outer whole-file preprocessing already removes drift.  Keep the per-band setting
+        # below the requested passband instead of deleting the known 100 Hz-1 kHz content.
+        highpass_hz=max(50.0, min(80.0, low * 0.8)),
         main_band_hz=(low, high),
         low_band_hz=low_band,
         mid_band_hz=mid_band,
@@ -437,44 +551,47 @@ def compute_shared_stft(
     bands: list[tuple[str, tuple[float, float]]],
     params_map: dict[str, Any],
 ) -> dict[str, dict[str, Any]]:
-    widest_params = None
-    widest_high = 0.0
-    for band_name, params in params_map.items():
-        if params.main_band_hz[1] > widest_high:
-            widest_high = params.main_band_hz[1]
-            widest_params = params
+    """Build safe per-band STFT contexts for one window.
 
-    stft_freqs, stft_times, stft_complex, stft_power = compute_stft_power(
-        window_signal, sample_rate, widest_params.stft_window_ms,
-        widest_params.stft_overlap, widest_params.stft_nfft,
-    )
-    short_freqs, short_times, _, short_power = compute_stft_power(
-        window_signal, sample_rate, widest_params.short_stft_window_ms,
-        widest_params.short_stft_overlap, widest_params.short_stft_nfft,
-    )
-
+    This compatibility helper intentionally does not crop one unnormalised wide-band STFT.  Each
+    spectrum is computed from the same canonical band signal used by the time-domain features.
+    The production batch path performs the same operation for many windows/bands at once.
+    """
+    detrended = sp_signal.detrend(np.asarray(window_signal, dtype=float) - np.mean(window_signal))
+    reference_params = next(iter(params_map.values()))
+    highpassed = butter_filter(detrended, sample_rate, (reference_params.highpass_hz, sample_rate * 0.49))
+    preprocessed = robust_normalize(highpassed, reference_params.eps) if reference_params.normalize_robust else highpassed
+    backend = "torch_cpu" if active_stft_backend() == "torch" else "scipy"
     shared: dict[str, dict[str, Any]] = {}
     for band_name, params in params_map.items():
+        main_signal = butter_filter(preprocessed, sample_rate, params.main_band_hz)
+        stft_freqs, stft_times, stft_complex, stft_power = compute_stft_power(
+            main_signal, sample_rate, params.stft_window_ms, params.stft_overlap, params.stft_nfft,
+        )
+        short_freqs, short_times, _, short_power = compute_stft_power(
+            main_signal, sample_rate, params.short_stft_window_ms, params.short_stft_overlap, params.short_stft_nfft,
+        )
         low_hz, high_hz = params.main_band_hz
         mask = (stft_freqs >= low_hz) & (stft_freqs <= high_hz)
-        band_freqs = stft_freqs[mask]
-        band_complex = stft_complex[mask, :]
-        band_power = stft_power[mask, :]
         mask_short = (short_freqs >= low_hz) & (short_freqs <= high_hz)
-        band_short_freqs = short_freqs[mask_short]
-        band_short_power = short_power[mask_short, :]
+        band_complex = np.asarray(stft_complex).copy()
+        band_power = np.asarray(stft_power, dtype=np.float64).copy()
+        band_complex[~mask, :] = 0.0
+        band_power[~mask, :] = 0.0
+        band_short_power = np.asarray(short_power, dtype=np.float64).copy()
+        band_short_power[~mask_short, :] = 0.0
 
         shared[band_name] = {
-            'stft_freqs': band_freqs,
+            'main_signal': main_signal,
+            'preprocessed_signal': preprocessed,
+            'stft_backend': backend,
+            'stft_freqs': stft_freqs,
             'stft_times': stft_times,
             'stft_complex': band_complex,
             'stft_power': band_power,
-            'short_freqs': band_short_freqs,
+            'short_freqs': short_freqs,
             'short_times': short_times,
             'short_power': band_short_power,
-            'full_stft_freqs': stft_freqs,
-            'full_stft_complex': stft_complex,
-            'full_stft_power': stft_power,
         }
 
     return shared
@@ -485,8 +602,11 @@ def compute_all_features_for_window(
     sample_rate: float,
     params_map: dict[str, Any],
     shared_stft: dict[str, dict[str, Any]] | None = None,
+    feature_requests: dict[str, frozenset[str]] | None = None,
 ) -> dict[str, float]:
     out: dict[str, float] = {}
+    if feature_requests is None:
+        feature_requests, _ = build_feature_request_map(params_map)
 
     if shared_stft is not None:
         from .signal_ops import (
@@ -503,10 +623,8 @@ def compute_all_features_for_window(
 
         for band_name, params in params_map.items():
             s = shared_stft[band_name]
-            detrended = sp_signal.detrend(window_signal - np.mean(window_signal))
-            highpassed = butter_filter(detrended, sample_rate, (params.highpass_hz, sample_rate * 0.49))
-            preprocessed = robust_normalize(highpassed, params.eps) if params.normalize_robust else highpassed
-            main_signal = butter_filter(preprocessed, sample_rate, params.main_band_hz)
+            preprocessed = np.asarray(s['preprocessed_signal'], dtype=float)
+            main_signal = np.asarray(s['main_signal'], dtype=float)
             envelope = smooth_envelope(main_signal, sample_rate, params.envelope_smooth_ms)
             peak_index = int(np.argmax(envelope)) if envelope.size else 0
             onset_index, offset_index = estimate_bounds_from_energy(envelope, params.onset_quantile, params.offset_quantile)
@@ -516,31 +634,39 @@ def compute_all_features_for_window(
                 s['stft_freqs'], s['stft_power'],
                 params.ridge_main_search_hz, params.ridge_jump_penalty_hz,
             )
-            ridge_f2, ridge_idx_f2 = _dynamic_programming_ridge(
-                s['stft_freqs'], s['stft_power'],
-                params.ridge_h2_search_hz, params.ridge_jump_penalty_hz,
-                prior_hz=2.0 * ridge_f1 if ridge_f1.size else None,
+            request = feature_requests.get(band_name, frozenset())
+            if request & FEATURE_FAMILIES['harmonic']:
+                ridge_f2, ridge_idx_f2 = _dynamic_programming_ridge(
+                    s['stft_freqs'], s['stft_power'],
+                    params.ridge_h2_search_hz, params.ridge_jump_penalty_hz,
+                    prior_hz=2.0 * ridge_f1 if ridge_f1.size else None,
+                )
+            else:
+                ridge_f2 = np.zeros_like(ridge_f1)
+                ridge_idx_f2 = np.zeros_like(ridge_idx_f1)
+
+            ridge_mask_full = build_ridge_mask(s['stft_freqs'], ridge_f1, ridge_f2, params.ridge_relative_bandwidth)
+            harmonic_complex = s['stft_complex'] * ridge_mask_full
+            residual_complex = s['stft_complex'] * (1.0 - ridge_mask_full)
+            total_energy_tf = float(np.sum(s['stft_power'], dtype=np.float64))
+            harmonic_energy = float(np.sum(np.abs(np.asarray(harmonic_complex, dtype=np.complex128)) ** 2, dtype=np.float64))
+            residual_power_band = np.abs(np.asarray(residual_complex, dtype=np.complex128)) ** 2
+
+            reconstructed = inverse_stft(
+                harmonic_complex, sample_rate, params.stft_window_ms, params.stft_overlap,
+                backend=s['stft_backend'], length=main_signal.size,
             )
-
-            ridge_mask_full = build_ridge_mask(s['full_stft_freqs'], ridge_f1, ridge_f2, params.ridge_relative_bandwidth)
-            ridge_mask_bool = ridge_mask_full > 0.0
-            total_energy_tf = float(np.sum(s['full_stft_power'], dtype=np.float64))
-            harmonic_energy = float(np.sum(s['full_stft_power'], where=ridge_mask_bool, dtype=np.float64))
-
-            # 子带残差功率（与 stft_freqs/stft_power 维度一致）
-            band_mask = (s['full_stft_freqs'] >= params.main_band_hz[0]) & (s['full_stft_freqs'] <= params.main_band_hz[1])
-            residual_power_band = np.asarray(s['stft_power'], dtype=np.float32).copy()
-            residual_power_band *= (1.0 - ridge_mask_full[band_mask, :])
-
-            reconstructed = reconstruct_from_mask(
-                s['full_stft_complex'], ridge_mask_full, sample_rate,
-                params.stft_window_ms, params.stft_overlap,
+            residual_signal = inverse_stft(
+                residual_complex, sample_rate, params.stft_window_ms, params.stft_overlap,
+                backend=s['stft_backend'], length=main_signal.size,
             )
-            if reconstructed.size < main_signal.size:
-                reconstructed = np.pad(reconstructed, (0, main_signal.size - reconstructed.size))
-            reconstructed = reconstructed[:main_signal.size]
-            residual_signal = main_signal - reconstructed
-            node_energies = compute_wavelet_node_energies(main_signal, params.wavelet_name, params.wavelet_level)
+            if request & FEATURE_FAMILIES['wavelet']:
+                node_energies, wavelet_sample_rate = compute_wavelet_node_energies(
+                    main_signal, params.wavelet_name, params.wavelet_level,
+                    sample_rate, params.main_band_hz, return_sample_rate=True,
+                )
+            else:
+                node_energies, wavelet_sample_rate = {}, sample_rate
 
             high_signal = butter_filter(preprocessed, sample_rate, params.high1_band_hz)
             high2_signal = butter_filter(preprocessed, sample_rate, params.high2_band_hz)
@@ -568,6 +694,7 @@ def compute_all_features_for_window(
                 stft_times=s['stft_times'],
                 stft_complex=s['stft_complex'],
                 stft_power=s['stft_power'],
+                stft_backend=s['stft_backend'],
                 short_freqs=s['short_freqs'],
                 short_times=s['short_times'],
                 short_power=s['short_power'],
@@ -582,6 +709,8 @@ def compute_all_features_for_window(
                 reconstructed_signal=reconstructed,
                 residual_signal=residual_signal,
                 wavelet_node_energies=node_energies,
+                wavelet_sample_rate=wavelet_sample_rate,
+                requested_features=feature_requests.get(band_name),
             )
 
             result = compute_all_features(context)
@@ -596,6 +725,7 @@ def compute_all_features_for_window(
         )
         for band_name, params in params_map.items():
             context = build_context(rec, params)
+            context.requested_features = feature_requests.get(band_name)
             result = compute_all_features(context)
             for k, v in result.features.items():
                 out[f'{band_name}__{k}'] = float(v)
@@ -622,6 +752,7 @@ def _worker_process_window(
     start_dt: datetime | None,
     bands: list[tuple[str, tuple[float, float]]],
     enable_shared_stft: bool,
+    feature_requests: dict[str, frozenset[str]] | None = None,
 ) -> tuple[dict[str, object], dict[str, object]]:
     """v2.2 Worker：从共享内存读取信号和 STFT 结果，纯 CPU 特征计算。"""
     try:
@@ -634,37 +765,73 @@ def _worker_process_window(
             stft_arrays, _ = _worker_get_arrays(stft_shm_info)
             stft_freqs = stft_arrays['stft_freqs']
             stft_times = stft_arrays['stft_times']
-            stft_complex_win = stft_arrays['stft_complex'][stft_chunk_idx]
-            stft_power_win = stft_arrays['stft_power'][stft_chunk_idx]
+            stft_complex_win = stft_arrays['stft_complex'][:, stft_chunk_idx]
+            stft_power_win = stft_arrays['stft_power'][:, stft_chunk_idx]
             short_freqs = stft_arrays['short_freqs']
             short_times = stft_arrays['short_times']
-            short_power_win = stft_arrays['short_power'][stft_chunk_idx]
+            short_power_win = stft_arrays['short_power'][:, stft_chunk_idx]
+            main_signals_win = stft_arrays['main_signals'][:, stft_chunk_idx]
+            preprocessed_win = stft_arrays['preprocessed_signals'][stft_chunk_idx]
+            backend = 'torch_cpu' if int(stft_arrays['stft_backend_code'][0]) == 1 else 'scipy'
 
             # 按频带切片 STFT 结果（与 compute_shared_stft 逻辑一致）
             shared_stft: dict[str, dict[str, Any]] = {}
-            for band_name, params in params_map.items():
-                low_hz, high_hz = params.main_band_hz
-                mask = (stft_freqs >= low_hz) & (stft_freqs <= high_hz)
-                mask_short = (short_freqs >= low_hz) & (short_freqs <= high_hz)
+            for band_index, (band_name, params) in enumerate(params_map.items()):
                 shared_stft[band_name] = {
-                    'stft_freqs': stft_freqs[mask],
+                    'main_signal': main_signals_win[band_index],
+                    'preprocessed_signal': preprocessed_win,
+                    'stft_backend': backend,
+                    'stft_freqs': stft_freqs,
                     'stft_times': stft_times,
-                    'stft_complex': stft_complex_win[mask, :],
-                    'stft_power': stft_power_win[mask, :],
-                    'short_freqs': short_freqs[mask_short],
+                    'stft_complex': stft_complex_win[band_index],
+                    'stft_power': stft_power_win[band_index],
+                    'short_freqs': short_freqs,
                     'short_times': short_times,
-                    'short_power': short_power_win[mask_short, :],
-                    'full_stft_freqs': stft_freqs,
-                    'full_stft_complex': stft_complex_win,
-                    'full_stft_power': stft_power_win,
+                    'short_power': short_power_win[band_index],
                 }
 
             fvals = compute_all_features_for_window(
                 win_signal, sample_rate, params_map, shared_stft=shared_stft,
+                feature_requests=feature_requests,
             )
         else:
+            # Reference path: use the same full-file band signals as the batch path, but compute
+            # one window at a time.  This is the correctness oracle for batch/worker comparisons.
+            reference_params = next(iter(params_map.values()))
+            scale = 1.4826 * float(np.median(np.abs(win_signal - np.median(win_signal)))) + reference_params.eps
+            preprocessed_win = win_signal / scale if reference_params.normalize_robust else win_signal
+            per_band: dict[str, dict[str, Any]] = {}
+            backend = 'torch_cpu' if active_stft_backend() == 'torch' else 'scipy'
+            for band_index, (band_name, params) in enumerate(params_map.items()):
+                main_signal = sig_arrays[f'band_{band_index}'][i0:i1].copy()
+                if params.normalize_robust:
+                    main_signal = main_signal / scale
+                freqs, times, complex_spec, power = compute_stft_power(
+                    main_signal, sample_rate, params.stft_window_ms, params.stft_overlap, params.stft_nfft,
+                )
+                short_freqs, short_times, _, short_power = compute_stft_power(
+                    main_signal, sample_rate, params.short_stft_window_ms, params.short_stft_overlap, params.short_stft_nfft,
+                )
+                mask = (freqs >= params.main_band_hz[0]) & (freqs <= params.main_band_hz[1])
+                short_mask = (short_freqs >= params.main_band_hz[0]) & (short_freqs <= params.main_band_hz[1])
+                complex_spec = np.asarray(complex_spec).copy()
+                power = np.asarray(power, dtype=np.float64).copy()
+                short_power = np.asarray(short_power, dtype=np.float64).copy()
+                complex_spec[~mask] = 0.0
+                power[~mask] = 0.0
+                short_power[~short_mask] = 0.0
+                per_band[band_name] = {
+                    'main_signal': main_signal,
+                    'preprocessed_signal': preprocessed_win,
+                    'stft_backend': backend,
+                    'stft_freqs': freqs, 'stft_times': times,
+                    'stft_complex': complex_spec, 'stft_power': power,
+                    'short_freqs': short_freqs, 'short_times': short_times,
+                    'short_power': short_power,
+                }
             fvals = compute_all_features_for_window(
-                win_signal, sample_rate, params_map, shared_stft=None,
+                win_signal, sample_rate, params_map, shared_stft=per_band,
+                feature_requests=feature_requests,
             )
 
         missing = ''
@@ -700,6 +867,7 @@ def _worker_process_window(
 
 def _compute_batched_stft(
     signal_pre: np.ndarray,
+    band_signals: dict[str, np.ndarray],
     windows: list[tuple[int, int, int, int, int]],
     sample_rate: float,
     params_map: dict[str, Any],
@@ -712,52 +880,13 @@ def _compute_batched_stft(
     Returns:
         [(stft_pack, chunk_start, chunk_end), ...]
     """
-    widest_params = None
-    widest_high = 0.0
-    for params in params_map.values():
-        if params.main_band_hz[1] > widest_high:
-            widest_high = params.main_band_hz[1]
-            widest_params = params
-
     results: list[tuple[_SharedArrayPack, int, int]] = []
 
     for chunk_start in range(0, len(windows), stft_batch_size):
         chunk_end = min(chunk_start + stft_batch_size, len(windows))
-        chunk_windows = windows[chunk_start:chunk_end]
-
-        # 提取窗口信号，堆叠为 (N, L)
-        chunk_signals = np.stack([
-            signal_pre[i0:i1].astype(np.float32)
-            for _, i0, i1, _, _ in chunk_windows
-        ])
-
-        # 批量 GPU STFT（标准窗）
-        stft_freqs, stft_times, stft_complex, stft_power = compute_stft_power(
-            chunk_signals, sample_rate,
-            widest_params.stft_window_ms,
-            widest_params.stft_overlap,
-            widest_params.stft_nfft,
-            batched=True,
+        pack = _compute_one_stft_chunk(
+            signal_pre, band_signals, windows, sample_rate, params_map, chunk_start, chunk_end,
         )
-        # 批量 GPU STFT（短窗，仅需 power）
-        short_freqs, short_times, _, short_power = compute_stft_power(
-            chunk_signals, sample_rate,
-            widest_params.short_stft_window_ms,
-            widest_params.short_stft_overlap,
-            widest_params.short_stft_nfft,
-            batched=True,
-        )
-
-        # 存入共享内存
-        pack = _SharedArrayPack({
-            'stft_freqs': stft_freqs.astype(np.float64),
-            'stft_times': stft_times.astype(np.float64),
-            'stft_complex': stft_complex,
-            'stft_power': stft_power,
-            'short_freqs': short_freqs.astype(np.float64),
-            'short_times': short_times.astype(np.float64),
-            'short_power': short_power,
-        })
         results.append((pack, chunk_start, chunk_end))
 
     return results
@@ -765,6 +894,7 @@ def _compute_batched_stft(
 
 def _compute_one_stft_chunk(
     signal_pre: np.ndarray,
+    band_signals: dict[str, np.ndarray],
     windows: list[tuple[int, int, int, int, int]],
     sample_rate: float,
     params_map: dict[str, Any],
@@ -772,37 +902,56 @@ def _compute_one_stft_chunk(
     chunk_end: int,
 ) -> _SharedArrayPack:
     """Compute one STFT chunk and store it in shared memory."""
-    widest_params = None
-    widest_high = 0.0
-    for params in params_map.values():
-        if params.main_band_hz[1] > widest_high:
-            widest_high = params.main_band_hz[1]
-            widest_params = params
-    if widest_params is None:
+    if not params_map:
         raise ValueError('params_map is empty')
+    reference_params = next(iter(params_map.values()))
 
     chunk_windows = windows[chunk_start:chunk_end]
     win_len = chunk_windows[0][3]
-    chunk_signals = np.empty((len(chunk_windows), win_len), dtype=np.float32)
+    band_names = list(params_map)
+    n_bands = len(band_names)
+    n_windows = len(chunk_windows)
+    main_signals = np.empty((n_bands, n_windows, win_len), dtype=np.float64)
+    preprocessed_signals = np.empty((n_windows, win_len), dtype=np.float64)
     for row_idx, (_, i0, i1, _, _) in enumerate(chunk_windows):
-        chunk_signals[row_idx, :] = signal_pre[i0:i1]
+        reference_window = np.asarray(signal_pre[i0:i1], dtype=np.float64)
+        scale = 1.4826 * float(np.median(np.abs(reference_window - np.median(reference_window)))) + reference_params.eps
+        preprocessed_signals[row_idx] = reference_window / scale if reference_params.normalize_robust else reference_window
+        for band_index, band_name in enumerate(band_names):
+            band_window = np.asarray(band_signals[band_name][i0:i1], dtype=np.float64)
+            main_signals[band_index, row_idx] = band_window / scale if params_map[band_name].normalize_robust else band_window
+
+    # All current bands share one STFT configuration.  Flatten (band, window) for one batched GPU
+    # call, then restore the two axes.  This shares execution without sharing a mathematically
+    # different wide-band spectrum.
+    flat_signals = main_signals.reshape(n_bands * n_windows, win_len)
 
     stft_freqs, stft_times, stft_complex, stft_power = compute_stft_power(
-        chunk_signals,
+        flat_signals,
         sample_rate,
-        widest_params.stft_window_ms,
-        widest_params.stft_overlap,
-        widest_params.stft_nfft,
+        reference_params.stft_window_ms,
+        reference_params.stft_overlap,
+        reference_params.stft_nfft,
         batched=True,
     )
     short_freqs, short_times, _, short_power = compute_stft_power(
-        chunk_signals,
+        flat_signals,
         sample_rate,
-        widest_params.short_stft_window_ms,
-        widest_params.short_stft_overlap,
-        widest_params.short_stft_nfft,
+        reference_params.short_stft_window_ms,
+        reference_params.short_stft_overlap,
+        reference_params.short_stft_nfft,
         batched=True,
     )
+    stft_complex = np.asarray(stft_complex).reshape(n_bands, n_windows, stft_complex.shape[-2], stft_complex.shape[-1])
+    stft_power = np.asarray(stft_power, dtype=np.float64).reshape(n_bands, n_windows, stft_power.shape[-2], stft_power.shape[-1])
+    short_power = np.asarray(short_power, dtype=np.float64).reshape(n_bands, n_windows, short_power.shape[-2], short_power.shape[-1])
+    for band_index, band_name in enumerate(band_names):
+        params = params_map[band_name]
+        mask = (stft_freqs >= params.main_band_hz[0]) & (stft_freqs <= params.main_band_hz[1])
+        short_mask = (short_freqs >= params.main_band_hz[0]) & (short_freqs <= params.main_band_hz[1])
+        stft_complex[band_index, :, ~mask, :] = 0.0
+        stft_power[band_index, :, ~mask, :] = 0.0
+        short_power[band_index, :, ~short_mask, :] = 0.0
 
     return _SharedArrayPack({
         'stft_freqs': stft_freqs.astype(np.float64),
@@ -812,7 +961,22 @@ def _compute_one_stft_chunk(
         'short_freqs': short_freqs.astype(np.float64),
         'short_times': short_times.astype(np.float64),
         'short_power': short_power,
+        'main_signals': main_signals,
+        'preprocessed_signals': preprocessed_signals,
+        'stft_backend_code': np.asarray([1 if active_stft_backend() == 'torch' else 0], dtype=np.int8),
     })
+
+
+def build_canonical_band_signals(
+    signal_pre: np.ndarray,
+    sample_rate: float,
+    params_map: dict[str, Any],
+) -> dict[str, np.ndarray]:
+    """Filter each full source once so every window/backend uses the same band signal."""
+    return {
+        name: np.asarray(butter_filter(signal_pre, sample_rate, params.main_band_hz), dtype=np.float64)
+        for name, params in params_map.items()
+    }
 
 
 def _is_recoverable_stft_memory_error(exc: BaseException) -> bool:
@@ -837,6 +1001,7 @@ def _clear_transient_memory() -> None:
 
 def _iter_adaptive_stft_chunks(
     signal_pre: np.ndarray,
+    band_signals: dict[str, np.ndarray],
     windows: list[tuple[int, int, int, int, int]],
     sample_rate: float,
     params_map: dict[str, Any],
@@ -852,6 +1017,7 @@ def _iter_adaptive_stft_chunks(
         try:
             pack = _compute_one_stft_chunk(
                 signal_pre,
+                band_signals,
                 windows,
                 sample_rate,
                 params_map,
@@ -875,10 +1041,10 @@ def _iter_adaptive_stft_chunks(
 @dataclass
 class SlidingWindowConfig:
     bands: list[tuple[str, tuple[float, float]]] = field(default_factory=lambda: [
-        ('b_1k_100k', (1_000.0, 100_000.0)),
-        ('b_1k_10k', (1_000.0, 10_000.0)),
+        ('b_100_60k', (100.0, 60_000.0)),
+        ('b_1k_60k', (1_000.0, 60_000.0)),
     ])
-    preproc_band: tuple[float, float] = (1_000.0, 95_000.0)
+    preproc_band: tuple[float, float] = (80.0, 65_000.0)
     window_duration_s: float = 0.02
     window_overlap: float = 0.50
     target_sample_rate: float = 500_000.0
@@ -889,6 +1055,8 @@ class SlidingWindowConfig:
     enable_numa_binding: bool = True
     enable_shared_stft: bool = True
     stft_batch_size: int = 200
+    feature_families_by_band: dict[str, tuple[str, ...]] | None = None
+    harmonic_band_name: str | None = None
 
 
 def _process_one_window(
@@ -948,6 +1116,10 @@ def process_source_file(
     centered = signal_up - float(np.mean(signal_up))
     signal_pre = butter_filter(centered, sample_rate=effective_rate, band_hz=config.preproc_band, order=4)
     params_map = {name: build_params_for_band(band, effective_rate) for name, band in config.bands}
+    band_signals = build_canonical_band_signals(signal_pre, effective_rate, params_map)
+    feature_requests, harmonic_band_name = build_feature_request_map(
+        params_map, config.feature_families_by_band, config.harmonic_band_name,
+    )
 
     starttime_raw = str(src['starttime_raw'])
     n_samples = len(signal_pre)
@@ -968,6 +1140,10 @@ def process_source_file(
         'starttime_raw': starttime_raw,
         'arrival_time_raw': str(src['arrival_time_raw']),
         'sample_type': str(src['sample_type']),
+        'feature_schema_version': FEATURE_SCHEMA_VERSION,
+        'stft_backend': active_stft_backend(),
+        'power_dtype': 'float64',
+        'harmonic_context_band': harmonic_band_name,
     }
 
     windows = list_window_ranges(n_samples, effective_rate, config.window_duration_s, config.window_overlap)
@@ -981,7 +1157,9 @@ def process_source_file(
     max_workers = max(1, int(max_workers))
 
     # 创建 signal_pre 共享内存
-    sig_pack = _SharedArrayPack({'signal_pre': signal_pre})
+    sig_arrays = {'signal_pre': signal_pre}
+    sig_arrays.update({f'band_{i}': band_signals[name] for i, name in enumerate(params_map)})
+    sig_pack = _SharedArrayPack(sig_arrays)
     sig_info = sig_pack.get_info()
 
     try:
@@ -989,6 +1167,7 @@ def process_source_file(
             # 主进程批量 GPU STFT
             stft_chunks = _iter_adaptive_stft_chunks(
                 signal_pre,
+                band_signals,
                 windows,
                 effective_rate,
                 params_map,
@@ -1008,7 +1187,7 @@ def process_source_file(
                                 sig_info, stft_info,
                                 win_id, i0, i1, win_len, step_len, idx_in_chunk,
                                 effective_rate, params_map, base_meta, start_dt,
-                                config.bands, config.enable_shared_stft,
+                                config.bands, config.enable_shared_stft, feature_requests,
                             )
                             futures.append(f)
 
@@ -1029,7 +1208,7 @@ def process_source_file(
                             sig_info, None,
                             w[0], w[1], w[2], w[3], w[4], 0,
                             effective_rate, params_map, base_meta, start_dt,
-                            config.bands, False,
+                            config.bands, False, feature_requests,
                         )
                         futures.append(f)
 
@@ -1063,6 +1242,10 @@ def _preload_file(
         centered = signal_up - float(np.mean(signal_up))
         signal_pre = butter_filter(centered, sample_rate=effective_rate, band_hz=config.preproc_band, order=4)
         params_map = {name: build_params_for_band(band, effective_rate) for name, band in config.bands}
+        band_signals = build_canonical_band_signals(signal_pre, effective_rate, params_map)
+        feature_requests, harmonic_band_name = build_feature_request_map(
+            params_map, config.feature_families_by_band, config.harmonic_band_name,
+        )
 
         starttime_raw = str(src['starttime_raw'])
         n_samples = len(signal_pre)
@@ -1083,6 +1266,10 @@ def _preload_file(
             'starttime_raw': starttime_raw,
             'arrival_time_raw': str(src['arrival_time_raw']),
             'sample_type': str(src['sample_type']),
+            'feature_schema_version': FEATURE_SCHEMA_VERSION,
+            'stft_backend': active_stft_backend(),
+            'power_dtype': 'float64',
+            'harmonic_context_band': harmonic_band_name,
         }
 
         windows = list_window_ranges(n_samples, effective_rate, config.window_duration_s, config.window_overlap)
@@ -1092,6 +1279,9 @@ def _preload_file(
             'signal_pre': signal_pre,
             'effective_rate': effective_rate,
             'params_map': params_map,
+            'band_signals': band_signals,
+            'feature_requests': feature_requests,
+            'harmonic_band_name': harmonic_band_name,
             'base_meta': base_meta,
             'start_dt': start_dt,
             'windows': windows,
@@ -1247,6 +1437,8 @@ def build_sliding_window_dataset(
             signal_pre = file_data['signal_pre']
             effective_rate = file_data['effective_rate']
             params_map = file_data['params_map']
+            band_signals = file_data['band_signals']
+            feature_requests = file_data['feature_requests']
             base_meta = file_data['base_meta']
             start_dt = file_data['start_dt']
             windows = file_data['windows']
@@ -1257,7 +1449,9 @@ def build_sliding_window_dataset(
                 continue
 
             # 创建 signal_pre 共享内存
-            sig_pack = _SharedArrayPack({'signal_pre': signal_pre})
+            sig_arrays = {'signal_pre': signal_pre}
+            sig_arrays.update({f'band_{i}': band_signals[name] for i, name in enumerate(params_map)})
+            sig_pack = _SharedArrayPack(sig_arrays)
             sig_info = sig_pack.get_info()
 
             rows_features: list[dict[str, object]] = []
@@ -1268,6 +1462,7 @@ def build_sliding_window_dataset(
                     # 主进程批量 GPU STFT
                     stft_chunks = _iter_adaptive_stft_chunks(
                         signal_pre,
+                        band_signals,
                         windows,
                         effective_rate,
                         params_map,
@@ -1287,7 +1482,7 @@ def build_sliding_window_dataset(
                                     sig_info, stft_info,
                                     win_id, i0, i1, win_len, step_len, idx_in_chunk,
                                     effective_rate, params_map, base_meta, start_dt,
-                                    config.bands, config.enable_shared_stft,
+                                    config.bands, config.enable_shared_stft, feature_requests,
                                 )
                                 futures.append(f)
 
@@ -1311,7 +1506,7 @@ def build_sliding_window_dataset(
                                 sig_info, None,
                                 w[0], w[1], w[2], w[3], w[4], 0,
                                 effective_rate, params_map, base_meta, start_dt,
-                                config.bands, False,
+                                config.bands, False, feature_requests,
                             )
                             futures.append(f)
 
@@ -1328,6 +1523,23 @@ def build_sliding_window_dataset(
 
             rows_features.sort(key=lambda x: int(x['window_id']))
             rows_log.sort(key=lambda x: int(x['window_id']))
+
+            completion_errors = validate_completed_file(
+                rows_features,
+                rows_log,
+                windows,
+                feature_requests,
+                next(iter(params_map.values())).wavelet_level,
+            )
+            if completion_errors:
+                stats['failed'] += 1
+                logger.error('文件完整性校验失败 %s: %s', fp, '; '.join(completion_errors))
+                if output_dir is not None:
+                    retry_path = output_dir / 'retry_samples.log'
+                    with retry_path.open('a', encoding='utf-8') as f:
+                        f.write(f"{datetime.now().isoformat()} | {fp} | {'; '.join(completion_errors)}\n")
+                _update_progress_bar(pbar)
+                continue
 
             df_features = pd.DataFrame(rows_features)
             df_log = pd.DataFrame(rows_log)

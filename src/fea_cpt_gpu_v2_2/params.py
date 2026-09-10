@@ -109,6 +109,12 @@ RIDGE_VALID_ENERGY_RATIO = 0.2
 # the relative-bandwidth R_2_1. Default: 1000 Hz. Recommended range: 500-2000 Hz.
 RIDGE_FIXED_BAND_HZ = 1_000.0
 
+# Feature names: SNR_band_db, E_excess, high_observable and harmonic observability gates.
+# The first fraction of each window is used as a conservative local background reference when
+# an external pre-event baseline is unavailable.  A feature is observable above 3 dB by default.
+BACKGROUND_FRACTION = 0.20
+OBSERVABLE_SNR_DB = 3.0
+
 # Feature names: C_bulge, N_bulge.
 # Function family: local bulge counting.
 # Physical meaning: the threshold ratio defines what portion of the envelope is considered the main bulge.
@@ -190,6 +196,8 @@ DEFAULT_FEATURE_PARAMS = FeatureParams(
     ridge_relative_bandwidth=RIDGE_RELATIVE_BANDWIDTH,
     ridge_valid_energy_ratio=RIDGE_VALID_ENERGY_RATIO,
     ridge_fixed_band_hz=RIDGE_FIXED_BAND_HZ,
+    background_fraction=BACKGROUND_FRACTION,
+    observable_snr_db=OBSERVABLE_SNR_DB,
     bulge_threshold_ratio=BULGE_THRESHOLD_RATIO,
     bulge_min_distance_ms=BULGE_MIN_DISTANCE_MS,
     residual_abnormal_threshold=RESIDUAL_ABNORMAL_THRESHOLD,

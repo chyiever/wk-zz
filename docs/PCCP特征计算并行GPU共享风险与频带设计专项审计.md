@@ -5,6 +5,8 @@
 > 已知信号先验：断丝有效频带约为 **100 Hz–60 kHz**，总体上频率越高能量越弱；环境干扰亦有相似的随频率衰减趋势。  
 > 当前数据与配置：当前 DATA09 数据记录显示采样率主要为 **1 MHz**；notebook 将目标采样率设为 1 MHz，30 ms 无重叠窗口，预处理带通为 1–95 kHz，配置 8 个分析频带，默认启用共享 STFT、CUDA 优先和 4 个窗口进程。
 
+> **整改状态说明（2026-09-10）**：以上“当前数据与配置”和正文风险描述是修复前审计快照，用于保留问题证据；本轮已经实施的代码、配置与验收状态统一记录在文末“附录 C：整改实施与验证日志”。修复后 notebook 的预处理通带为 80 Hz–65 kHz，默认分析频带为 7 个，特征 schema 为 `pccp-v3-safe-shared-20260910`。
+
 ---
 
 ## 1. 结论摘要
@@ -655,3 +657,117 @@ BANDS = [
 - 整改优先级、停用范围和验收标准。
 
 完成代码整改后，应同步更新特征字典中的信号定义、能量范围、谐波上下文、可观测性门限、各特征适用频带和 schema 版本，避免再次出现“文档公式正确，但默认优化路径计算了另一种量”的情况。
+
+---
+
+## 附录 C：整改实施与验证日志（2026-09-10）
+
+### C.1 本轮版本边界
+
+- 修复前工作区快照已单独提交并推送：`4d32e04`（`同步特征分析更新并新增计算风险专项审计`）。
+- 修复代码集中在 `src/fea_cpt_gpu_v2_2/`；DATA09 默认运行参数同步到 `notebooks/DATA09_v0-flow_feature_extraction.ipynb`。
+- 新输出带有 `feature_schema_version=pccp-v3-safe-shared-20260910`，并记录 `stft_backend`、`power_dtype=float64`、`harmonic_context_band`。旧共享路径产物不得与该 schema 混合训练。
+
+### C.2 修复结果与严重程度闭环
+
+| 原严重度 | 修复项 | 实施结果 | 状态 |
+|---|---|---|---|
+| S0 阻断 | processed log 成功判据 | 写 CSV 和 processed log 前执行文件级严格校验：窗口数量与 ID、日志数量、worker 错误、按频带请求的完整 schema、Inf 和非许可 NaN。失败文件只写 `retry_samples.log`，不进入 processed log | 已修复 |
+| S0 阻断 | STFT/ISTFT 混库 | 新增配对 `inverse_stft()`；SciPy 前向只由 SciPy 逆变换，Torch 前向只由 Torch 逆变换。窗型、`n_fft`、hop、`center`、归一化及输出长度一致 | 已修复 |
+| S0 阻断 | CUDA 时间轴偏移 | Torch `center=True` 的帧时间改为 `m·hop/fs`，首帧为 0，不再额外加半窗 | 已修复 |
+| S0 阻断 | 共享宽带 STFT 被裁剪冒充带通 STFT | 对整文件先生成每个规范带通信号；逐窗使用同一 MAD 标度；将 `(band, window, sample)` 展平后集中 batch STFT，再恢复频带/窗口轴 | 已修复 |
+| S0 阻断 | 能量分子/分母跨范围 | `E_total`、`E_harm`、`E_res` 全部来自当前规范带通信号的同一 STFT 频率范围；所有功率总和和关键比值分母采用 float64 累加 | 已修复 |
+| S1 严重 | 残差双重定义 | 复谱唯一残差为 `(1-M_h)X_B`；时域唯一残差为其配对 ISTFT；`epsilon_rec` 直接使用该残差能量，不再另算 `x-ISTFT(M_hX_B)` | 已修复 |
+| S0 阻断 | 窄带内错误搜索二倍频 | 明确 `b_100_60k` 为谐波上下文；二倍频族只从此宽带输出，窄带不再生成貌似有效的 H2 列；`f1≤30 kHz`、`f2≤60 kHz` | 已修复 |
+| S3 冗余 | 每频带固定 80 列 | 建立 time/spectral/ridge/harmonic/residual/background/wavelet/damped 八类 allowlist；按频带输出适用族。新 schema 默认不输出 `A_env`（由 `r_p` 线性决定）和 `Ridge_coh`（`R_harm` 同值别名） | 已修复 |
+| S1/S2 | WPT 节点映射与尺度 | WPT 前按主带上限降采样到约 `max(4 kHz, 3·f_high)`（不超过原采样率）；四层节点使用 PyWavelets `order="freq"` 的显式频率序号计算中心频率，禁止把 `a/d` 路径直接当二进制频率码 | 已修复 |
+| S1 严重 | 阻尼原子固定零时刻、零相位 | 原子改为因果起振；候选起点包含事件 onset 和残差包络峰值；每个 `(t0,f,τ)` 同时投影正弦/余弦正交子空间，匹配结果对任意相位不偏置 | 已修复 |
+| S2 中等 | GPU/多进程争用 | Torch STFT 仍在主进程集中 GPU batch；worker 的配对逆变换使用 Torch CPU（同库同约定），不为每个进程创建竞争的 CUDA 逆变换上下文 | 已修复 |
+| S2 中等 | 弱高频被解释为物理零 | 新增 `SNR_band_db`、`E_excess`、`SNR_high_db`、`high_observable`、`H2_observable`；默认阈值 3 dB。不可观测时相关衰减/二倍频量写 NaN，并由质量标志解释 | 已修复 |
+
+### C.3 修复后的数学契约
+
+对频带 $B$，整文件预处理后的信号先经固定带通得到 $x_B$。窗口 $w$ 只做同一窗口 MAD 标度 $a_w$，因此批处理输入为：
+
+\[
+s_{B,w}[n]=\frac{x_B[n+n_w]}{a_w}.
+\]
+
+GPU 共享仅共享一次批量调用，不改变输入定义：
+
+\[
+X_{B,w}=\operatorname{STFT}_{\mathcal L}(s_{B,w}),\qquad
+X_{h,B,w}=M_hX_{B,w},\qquad
+X_{r,B,w}=(1-M_h)X_{B,w},
+\]
+
+\[
+x_{h,B,w}=\operatorname{ISTFT}_{\mathcal L}(X_{h,B,w}),\qquad
+x_{r,B,w}=\operatorname{ISTFT}_{\mathcal L}(X_{r,B,w}),
+\]
+
+其中 $\mathcal L$ 在一个上下文内固定为 SciPy 或 Torch。Torch 生产路径允许 GPU 前向、CPU 逆向，但仍是 Torch 的同一算法和参数约定，不跨库。
+
+统一能量定义为：
+
+\[
+E_{total}=\sum_{k,m}|X_{B,w}[k,m]|^2,
+\quad E_{harm}=\sum_{k,m}|M_hX_{B,w}[k,m]|^2,
+\quad E_{res}=\sum_{k,m}|(1-M_h)X_{B,w}[k,m]|^2.
+\]
+
+由于当前 $M_h$ 是二值掩模，在浮点容差内应满足：
+
+\[
+E_{total}=E_{harm}+E_{res}.
+\]
+
+局部背景量使用事件帧均值而不是全文件类别先验：
+
+\[
+SNR_B=10\log_{10}\frac{\bar E_{event,B}+\varepsilon}{\bar E_{background,B}+\varepsilon},
+\]
+
+\[
+E_{excess,B}=\max\left(\sum_{m\in event}E_B[m]-N_{event}\bar E_{background,B},0\right).
+\]
+
+背景帧优先取事件边界之外的帧；若不足窗口的 20%，回退为窗口前 20%。这只是局部可观测性估计，不是分类标签。`high_observable=0` 时 `beta_H/T_half_high` 为 NaN；`H2_observable` 使用二倍频脊线邻域自身的事件/背景 SNR，若为 0，则 `H2_ratio/R_2_1/R_h/epsilon_2x/C_h` 为 NaN。
+
+### C.4 修复后的频带与特征族建议
+
+DATA09 notebook 当前采用下表。这里区分“可以立即计算”和“需多分辨率路径后启用”，避免因 1 MHz、0.64 ms STFT 在低频只有约一个 bin 而制造伪精度。
+
+| 频带 | 当前建议输出 | 用途与限制 |
+|---|---|---|
+| 100 Hz–60 kHz | time、spectral、ridge、harmonic、residual、background、wavelet、damped | 唯一全带谐波/残差/WPT/阻尼上下文；计算最重，只保留一份 |
+| 1–60 kHz | time、spectral、ridge、residual、background | 对照去除极低频后主体结构；不再重复谐波/WPT/阻尼 |
+| 100 Hz–1 kHz | time、background | 当前先保留带通信号的包络/形状和局部背景量；谱质心、谱熵、脊线必须等长窗/低采样率组实现后再启用 |
+| 1–5 kHz | time、spectral、ridge、background | 低频共振；当前频率 bin 数仍较少，解释时需标注分辨率 |
+| 5–15 kHz | time、spectral、ridge、background | 主要结构共振和主脊线候选带 |
+| 15–30 kHz | time、spectral、ridge、residual、background | 中高频瞬态及可产生 30–60 kHz 二倍频的基频候选 |
+| 30–60 kHz | time、spectral、residual、background | 弱高频冲击/衰减；必须联用 `SNR_high_db/high_observable`，不输出带内二倍频 |
+
+如后续实测消融显示需要 5–30 kHz 汇总带，可作为第 8 带增加，但不建议恢复原来的重叠窄带全集。当前预处理通带设置为 **80 Hz–65 kHz**，为目标 100 Hz–60 kHz 留过渡带；若传感器/前端 60 kHz 以上没有可信响应，应基于实测频响收紧上限，而非仅靠软件扩大通带。
+
+### C.5 自动化验证证据
+
+新增 `tests/test_fea_cpt_gpu_v2_2_safety.py`，当前验证结果为 7/7 通过：
+
+1. 当前后端 STFT→ISTFT 往返、首帧时间 0、功率数组 float64；
+2. Torch GPU 前向频谱可由 Torch CPU 使用同一约定完成逆变换；
+3. `E_total=E_harm+E_res` 的同范围能量守恒；
+4. 谐波特征只存在于明确宽带上下文；
+5. 规范带通信号的 batch 路径与逐窗 reference 逐列一致；
+6. WPT 频率序映射、自适应采样尺度，以及阻尼匹配对事件位置/相位的容忍性；
+7. processed 成功门禁拒绝缺特征窗口。
+
+补充解析验证：200 kHz、6 kHz+12 kHz 衰减正弦的 Torch STFT/ISTFT 归一化往返误差约为 $1.89\times10^{-7}$；CPU 与 GPU 的规范 batch/reference 检查均未发现逐列差异（测试信号与配置范围内最大相对差为 0）。对 1 MHz、30 ms、12 kHz 单正弦，SciPy/Torch 均得到 `(513,376)` 频谱和 `[0,30 ms]` 时间轴；总功率分别为 `224.7209241794` 与 `224.7209038597`，相对差约 $9.0\times10^{-8}$，说明窗增益/绝对功率标度已经对齐。
+
+### C.6 仍保留的限制与后续事项
+
+本轮没有把“100 Hz–1 kHz 长窗/低采样率 STFT”混入现有单一 STFT batch，因为不同时间分辨率不能假装成同一参数组。当前采取的安全策略是先停止输出该带的谱/脊线族。后续应按第 7.4 节实现多分辨率配置分组，再分别 batch。
+
+`Q_MP` 的底层 CUDA Hankel SVD 仍可能使用 float32；本轮已把功率统计、能量和比值累加统一为 float64，但这不等于所有线性代数核都变为 float64。`Q_MP` 应继续接受 CPU float64 抽样回归和病态矩阵质量监测。
+
+历史 CSV 中以下列必须重算，不能通过列名转换修复：所有共享路径时频/脊线/谐波/残差列、WPT、阻尼原子、`epsilon_rec` 以及由旧 processed log 跳过而可能缺失的窗口。仅元数据列可迁移。

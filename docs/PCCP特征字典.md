@@ -3,11 +3,11 @@
 本文档是 PCCP 断丝信号特征挖掘所用候选特征的完整字典表，包含公式、中英文名称、代码变量名与物理意义。
 代码实现见 `src/fea_cpt_gpu_v2_2/features.py`（`DATA09_v0-flow_feature_extraction.ipynb`、`DATA09_v0-qj` 样本特征提取等实际调用的版本），中文含义映射见 `src/pccp_feature_mining/feature_schema.py` 的 `BASE_FEATURE_MEANINGS`。
 
-> 条目说明：本表按 65 行计（`R_wp_*` 记为 1 行）；实际实现为 **64 个静态特征 + 16 个小波包节点特征（`R_wp_*`）= 每频带 80 个基础特征**。流水线在 8 个频带上重复计算，每个 30 ms 窗共 640 列。
+> 条目说明：原表按 65 行计（`R_wp_*` 记为 1 行）。2026-09-10 起新增 5 个可观测性/背景量，并改为**按频带适用的特征族输出**；不再把“64 个静态特征 + 16 个 WPT 节点”机械复制到每个频带。宽带谐波上下文可输出完整族，窄频带只输出适用族，实际列数由 `feature_families_by_band` 决定。
 
 ## 符号约定
 
-- $x[n]$：预处理后的带通信号（默认 5–60 kHz），$x_{\text{res}}[n]$：谐波模型剥离后的残差信号
+- $x_B[n]$：当前规范带通信号；$X_B$：由同一 `STFT` 后端计算的复谱；$M_h\in\{0,1\}$：谐波脊线掩模；唯一残差定义为 $X_{\text{res}}=(1-M_h)X_B$、$x_{\text{res}}=\mathrm{ISTFT}(X_{\text{res}})$
 - $e[n]$：包络 $e[n]=|\mathrm{hilbert}(s[n])|$，$s[n]$ 取 $x_B,x_{H1},x_{H2}$ 或 $x_{\text{res}}$
 - $f_1(t)$：主脊线频率轨迹；$f_2(t)$：二倍频脊线频率轨迹
 - $P(t,f)$：STFT 功率谱；$E_B=\sum_{f\in B}P(t,f)$ 为频带能量
@@ -57,10 +57,10 @@
 | 35 | `Delta_f_span` | 频率跨度 | Frequency Span | $\Delta f_{\text{span}}=\max(f_1)-\min(f_1)$ | 主脊线频率摆动覆盖范围 |
 | 36 | `C_f` | 归一化频率曲率 | Normalized Frequency Curvature | $C_f=\dfrac{\mathrm{mean}\left(\left\lvert\dfrac{d^2f_1}{dt^2}\right\rvert\right)}{\mathrm{mean}\lvert f_1\rvert}$ | 主频轨迹的弯折程度，除以平均主频做**相对曲率**归一化，跨频带可比 |
 | 37 | `E_harm` | 谐波能量 | Harmonic Energy | $E_{\text{harm}}=\sum M_hP$ | 谐波脊线掩模下的绝对能量 |
-| 38 | `E_res` | 残差能量 | Residual Energy | $E_{\text{res}}=E_{\text{total}}-E_{\text{harm}}$ | 谐波模型未解释的能量 |
+| 38 | `E_res` | 残差能量 | Residual Energy | $E_{\text{res}}=\sum\lvert(1-M_h)X_B\rvert^2$ | 当前主频带范围内、谐波模型未解释的能量；与 `E_total`、`E_harm` 使用同一复谱和频率范围 |
 | 39 | `rho_res` | 残差能量占比 | Residual Energy Ratio | $\rho_{\text{res}}=\dfrac{E_{\text{res}}}{E_{\text{total}}}$ | 未能被模型解释的能量占比，异常程度指标 |
 | 40 | `R_high_res` | 高频残差占比 | High-freq Residual Ratio | $R_{\text{high,res}}=\dfrac{E_{\text{res,high}}}{E_{\text{total}}}$ | 高频带内残差能量占总能量比例 |
-| 41 | `epsilon_rec` | 重构归一化误差 | Reconstruction Error | $\varepsilon_{\text{rec}}=\dfrac{\lVert x-\hat x_f\rVert_2^2}{\lVert x\rVert_2^2}$ | 原始信号与谐波重构信号的整体失配程度 |
+| 41 | `epsilon_rec` | 重构归一化误差 | Reconstruction Error | $\varepsilon_{\text{rec}}=\dfrac{\lVert x_{\text{res}}\rVert_2^2}{\lVert x_B\rVert_2^2}$ | 使用唯一残差 `ISTFT((1-M_h)X_B)` 的时域归一化能量，避免另行用减法定义第二种残差 |
 | 42 | `N_abn` | 异常帧数 | Abnormal Frame Count | $N_{\text{abn}}=N\{\rho_{\text{res}}^{(m)}>\tau_{\text{res}}\}$ | 残差能量占比超阈值的帧数，测残差爆发帧规模 |
 | 43 | `F_peak` | 谱通量峰值 | Spectral Flux Peak | $F_{\text{peak}}=\max_i\sum_j[P(i,j)-P(i-1,j)]_+$ | 频谱突变的峰值强度，测瞬态冲击 |
 | 44 | `R_tkeo` | TKEO 峰值比 | TKEO Peak Ratio | $R_{\text{tkeo}}=\dfrac{\max(\Psi[n])}{\mathrm{mean}(\Psi[n])}$ | 原信号 Teager 能量的峰值/均值比，测冲击尖锐度 |
@@ -79,27 +79,43 @@
 | 57 | `R_wp_*` | 小波包节点能量占比 | Wavelet Packet Node Ratio | $R_{\text{wp},i}=\dfrac{E_{\text{wp},i}}{\sum_j E_{\text{wp},j}}$ | 各小波包子带能量占全谱（小波域）比例 |
 | 58 | `H_wp` | 小波包熵 | Wavelet Packet Entropy | $H_{\text{wp}}=-\sum_i p_i\ln p_i$ | 小波包能量分布扩散度 |
 | 59 | `I_burst` | 小波包子带能量集中度 | Subband Energy Concentration | $I_{\text{burst}}=\dfrac{\max(E_{\text{wp}})}{\mathrm{median}(E_{\text{wp}})}$ | 能量在子带间的集中度（跨子带 max/median），与"时间域突发性"无关 |
-| 60 | `D_WPT` | 高频-低频能差 | WPT High-Low Difference | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in LF}p_i$ | 高频小波包与低频小波包能量差。HF/LF 按**子带中心频率 > 主带几何中点**划分（不再按节点序对半分） |
-| 61 | `C_damp` | 阻尼原子匹配度 | Damped Atom Match | $C_{\text{damp}}=\dfrac{\max_\theta\lvert\langle r,g_\theta\rangle\rvert}{\lVert r\rVert\lVert g_\theta\rVert}$ | 残差与阻尼正弦原子库的最佳匹配相似度 |
+| 60 | `D_WPT` | 高频-低频能差 | WPT High-Low Difference | $D_{\text{WPT}}=\sum_{i\in HF}p_i-\sum_{i\in LF}p_i$ | WPT 前按主带上限自适应降采样（目标约为 $\max(4\text{kHz},3f_H)$，且不超过原采样率）；节点按 PyWavelets `order="freq"` 的显式频率次序映射，HF/LF 以主带几何中点划分 |
+| 61 | `C_damp` | 阻尼原子匹配度 | Damped Atom Match | $g(t)=\mathbf1_{t\ge t_0}e^{-(t-t_0)/\tau}\cos(2\pi f(t-t_0)+\phi)$，$C_{\text{damp}}=\max_{t_0,f,\tau,\phi}\dfrac{\lvert\langle r,g\rangle\rvert}{\lVert r\rVert\lVert g\rVert}$ | 原子从候选事件起点/残差峰值起振，并以正交正弦—余弦基消除固定零相位偏置 |
 | 62 | `alpha_hat` | 估计阻尼系数 | Damping Coefficient | $\log e_{\text{res}}(t)\approx-\hat\alpha t+b,\ t\in[t_p,t_{off}]$ | 残差包络对数在**峰后衰减段**线性拟合的斜率，测衰减速度（不混入上升段） |
 | 63 | `Q_MP` | Hankel 低秩重建质量 | Hankel Low-rank Quality | 基于残差的 Hankel 矩阵秩 2 SVD 最优近似的重建质量 | 残差能否用单个阻尼振荡解释的度量（**非矩阵铅笔法**，无需估计极点） |
 | 64 | `Delta_J` | 损伤原子增益 | Damage Atom Gain | $\Delta J=\dfrac{\lVert x-\hat x_f\rVert^2-\lVert x-\hat x_f-\hat x_d\rVert^2}{\lVert x\rVert^2}$ | 加入损伤原子后重构误差下降率 |
 | 65 | `eta_dict` | 损伤分量波形占比 | Damage Component Waveform Ratio | $\eta_{\text{dict}}=\dfrac{\lVert x_d\rVert_1}{\lVert x_f\rVert_1+\lVert x_d\rVert_1}$ | 损伤分量波形 L1 范数占比。实现口径：$x_f$=谐波重构信号、$x_d$=最佳阻尼原子的损伤投影分量；**非稀疏字典系数占比**（未做字典学习/OMP） |
 
+### 可观测性与背景增补特征（2026-09-10）
+
+| 变量名 | 中文名称 | 计算公式 | 门限/用途 |
+|---|---|---|---|
+| `SNR_band_db` | 当前频带局部背景信噪比 | $10\log_{10}\dfrac{\bar E_{\mathrm{event}}+\varepsilon}{\bar E_{\mathrm{bg}}+\varepsilon}$ | 事件段由包络边界映射到 STFT 帧；背景不足时取窗口前 20% 作为局部背景 |
+| `E_excess` | 超额能量 | $\max(\sum_{t\in event}E_B(t)-N_{event}\bar E_{bg},0)$ | 扣除局部背景基线后保留的非负能量，适合高频能量自然衰减场景 |
+| `SNR_high_db` | 高频子带局部背景信噪比 | $10\log_{10}\dfrac{\bar E_{H,event}+\varepsilon}{\bar E_{H,bg}+\varepsilon}$ | 判断当前频带内部高频子带是否达到可解释水平 |
+| `high_observable` | 高频可观测标志 | $\mathbf1(SNR_{high}\ge3\,\mathrm{dB}\land \bar E_{H,event}>\varepsilon)$ | 为 0 时 `beta_H`、`T_half_high` 输出 `NaN`，不把不可测误写成物理零值 |
+| `H2_observable` | 二倍频可观测标志 | $\mathbf1(SNR_{2nd}\ge3\,\mathrm{dB}\land \bar E_{2,event}>\varepsilon)$ | `SNR_2nd` 使用二倍频脊线邻域的事件/背景帧能量；只在明确的宽带谐波上下文计算，为 0 时二倍频比值/偏差类量输出 `NaN` |
+
 ## 补充说明
 
 ### 频带前缀与子带划分
-同一条基础特征在多个频带上重复计算，CSV 列名为 `b_<band>__<base >`，例如：
-- `b_1k_10k__rho_up` → 1–10 kHz 频带上的 `rho_up`
-- `b_20k_30k__H2_ratio` → 20–30 kHz 频带上的 `H2_ratio`
-- `b_1k_50k__epsilon_rec`、`b_1k_100k__epsilon_rec` → 更宽频带上的重构误差
+CSV 列名仍采用 `b_<band>__<base>`，但特征按物理适用的族选择，不再在每个频带上全部重复。例如：
+
+- `b_100_60k` 是明确的宽带谐波上下文，可输出 harmonic/wavelet/damped 等完整族；
+- `b_100_1k` 主要输出 time/spectral/background；
+- `b_5k_15k` 主要输出 time/spectral/ridge/background；
+- `b_30k_60k` 输出 time/spectral/residual/background，并通过高频可观测门限解释衰减量。
 
 `b_<band>` 前缀决定该频带内的子带参数：`sliding_window.build_params_for_band()` 按主带跨度分数生成 `low/mid/high1/high2/harmonic` 子带（低频 $0.30\times$、中频 $0.30$–$0.60\times$、高频 $0.50$–$0.80\times$、高频带 $0.60\times$–上限、谐波带 $0.50\times$–上限），主脊线搜索 $0$–$0.65\times$ 跨度。因此同名基础特征在不同频带前缀下的高/低频含义不同，比较时须带上前缀。
 频带划分的常量定义见 `src/fea_cpt_gpu_v2_2/params.py` 的 `LOW/MID/HIGH1/HIGH2/HARMONIC_BAND_HZ`，中文展示见 `feature_schema.py:band_chinese_label()`。
 
 ### 实现口径补充说明（与代码对齐）
 - `rho_r` 及 `H2_ratio`、`epsilon_2x`、`C_h`、`rho_up/down` 的 $N_{\text{active}}$ 分母共用**帧有效性判据**（主带帧能量 $>0.2\times$ 帧能量中位数）。
-- `beta_H`、`alpha_hat` 为**峰后窗拟合**（$t\in[t_p,t_{off}]$），避免全窗拟合混入能量上升段。
+- `beta_H`、`alpha_hat` 为**峰后窗拟合**（$t\in[t_p,t_{off}]$），避免全窗拟合混入能量上升段；高频不可观测时衰减量返回 `NaN`。
+- `STFT/ISTFT` 必须成对使用同一库与完全一致的窗、步长、中心化及长度约定；Torch 批量前向在主进程集中执行，worker 使用 Torch CPU 逆变换，避免多进程争用 CUDA 上下文。
+- `E_total`、`E_harm`、`E_res` 统一取当前规范带通信号的同一 STFT 频率范围，并用 `float64` 累加；唯一残差为 `ISTFT((1-M_h)X_B)`。
+- WPT 四层分解前按当前主带上限自适应降采样，节点中心频率依据 `order="freq"` 返回位置而非 `a/d` 路径二进制直译。
+- 阻尼原子以事件起点/残差峰值为候选 $t_0$，并同时投影正弦、余弦基以消除起点和相位偏置。
 - `F_peak` 按**逐频点正增量（半波整流）再求和**计算，首帧通量置 0。
 - `T_half_high` 为**峰后衰减时长**，峰后从未跌破 50% 时返回 `NaN`。
 - `R_2_1`、`H_stack` 采用脊线 $\pm\Delta f$（$\Delta f=\max(2\text{bin},0.08f_1)$）带内积分；`R_h` 采用 $f_1/f_2$ 固定 $\pm1$ kHz 邻域积分（超出频率轴范围的帧跳过），二者互补而非重复。
@@ -113,7 +129,7 @@
 - **正常流噪声（FL）信号**：宽带、平稳、无确定性谐波结构，`rho_res`、`N_abn`、`H_tf` 等反映其随机性。
 
 ### 与代码的对应关系
-- `feature_schema.py:BASE_FEATURE_MEANINGS`：Notebook 展示用的中文含义映射（当前已覆盖全部 65 项静态特征）。
+- `feature_schema.py:BASE_FEATURE_MEANINGS`：Notebook 展示用的中文含义映射（包括新增背景/可观测性特征；`R_wp_*` 支持动态节点名回退）。
 - `fea_cpt_gpu_v2_2/features.py:compute_all_features()`：上述所有特征的实际计算实现。
 - `fea_cpt_gpu_v2_2/sliding_window.py`：滑窗流水线，`DATA09_v0-flow_feature_extraction.ipynb` 即调用该流水线。
 

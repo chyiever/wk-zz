@@ -85,6 +85,8 @@ class FeatureParams:
     ridge_relative_bandwidth: float = 0.08
     ridge_valid_energy_ratio: float = 0.2
     ridge_fixed_band_hz: float = 1_000.0
+    background_fraction: float = 0.20
+    observable_snr_db: float = 3.0
     bulge_threshold_ratio: float = 0.6
     bulge_min_distance_ms: float = 0.2
     residual_abnormal_threshold: float = 0.55
@@ -119,6 +121,7 @@ class FeatureContext:
     stft_times: np.ndarray
     stft_complex: np.ndarray
     stft_power: np.ndarray
+    stft_backend: str
     short_freqs: np.ndarray
     short_times: np.ndarray
     short_power: np.ndarray
@@ -133,3 +136,5 @@ class FeatureContext:
     reconstructed_signal: np.ndarray
     residual_signal: np.ndarray
     wavelet_node_energies: dict[str, float]
+    wavelet_sample_rate: float
+    requested_features: frozenset[str] | None = None

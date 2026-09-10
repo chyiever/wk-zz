@@ -49,6 +49,10 @@ META_COLUMNS = {
     "sampling_group_id",
     "row_uid",
     "split",
+    "feature_schema_version",
+    "stft_backend",
+    "power_dtype",
+    "harmonic_context_band",
 }
 
 FEATURE_NAME_RE = re.compile(r"^b_[0-9a-zA-Z_]+__")
@@ -78,6 +82,7 @@ BASE_FEATURE_MEANINGS = {
     "R2_ridge": "脊线拟合优度，描述主脊线轨迹可解释性",
     "S_arch": "脊线拱形分数，描述频率轨迹是否呈拱形变化",
     "H2_ratio": "二倍频一致性比，满足 |f2-2f1|<Δf 的有效帧占比，描述 2:1 谐波关系出现频率",
+    "H2_observable": "二倍频可观测标志，事件频带SNR达到门限且二倍频脊线能量有效时为1",
     "R_2_1": "二倍频/基频比，f2/f1 脊线 ±相对带宽(±0.08f₁) 邻域能量之比，描述谐波相对基频强度",
     "H_stack": "谐波栈能量比，描述多阶谐波组织程度",
     "R_h": "谐波能量比，f1/f2 脊线固定 ±1 kHz 邻域能量之比，描述二倍频相对基频强度（与 R_2_1 互补）",
@@ -126,6 +131,10 @@ BASE_FEATURE_MEANINGS = {
     "S_res_env": "残差包络对称度，残差包络与其反折信号的相关系数，描述残差包络形状的对称性",
     "eta_asym": "残差不对称比，峰值后残差能量与峰值前残差能量之比，描述残差包络的上升/衰减不对称性",
     "epsilon_rec": "整体重构归一化误差，原始信号与谐波重构信号之差的能量占原始能量的比例",
+    "SNR_band_db": "当前频带事件段相对局部背景段的能量信噪比（dB）",
+    "E_excess": "当前频带扣除局部背景均值后的非负超额能量",
+    "SNR_high_db": "当前频带内部高频子带事件段相对局部背景段的信噪比（dB）",
+    "high_observable": "高频子带可观测标志，高频SNR达到门限且事件能量有效时为1",
 }
 
 

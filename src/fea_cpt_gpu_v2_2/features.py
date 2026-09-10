@@ -26,6 +26,42 @@ from .gpu_backend import rank2_hankel_quality
 from .signal_ops import safe_divide, smooth_envelope
 
 
+FEATURE_FAMILIES: dict[str, frozenset[str]] = {
+    "time": frozenset({
+        "r_p", "C_E", "S_env", "Sk_env", "R_td", "R_fb", "C_bulge",
+        "N_bulge", "epsilon_env", "eta_bw", "R_tkeo", "K_loc",
+    }),
+    "spectral": frozenset({
+        "SC_mean", "k_sc", "R_hl_mean", "k_hl", "beta_H", "H_tf", "SF", "H_alpha",
+        "F_peak", "SK_max",
+    }),
+    "ridge": frozenset({
+        "rho_r", "G_gap", "R2_ridge", "S_arch", "rho_up", "rho_down", "N_turn",
+        "Delta_f_span", "C_f",
+    }),
+    "harmonic": frozenset({
+        "H2_ratio", "H2_observable", "R_2_1", "H_stack", "R_h", "epsilon_2x", "C_h", "R_harm",
+        "E_harm",
+    }),
+    "residual": frozenset({
+        "E_res", "rho_res", "R_high_res", "epsilon_rec", "N_abn", "R_res_tkeo",
+        "K_res_max", "CF_res", "SC_res_mean", "k_res_sc", "R_res_hl_mean", "k_res_hl",
+        "S_res_env", "eta_asym", "T_half_high",
+    }),
+    "background": frozenset({"SNR_band_db", "E_excess", "SNR_high_db", "high_observable"}),
+    "wavelet": frozenset({"H_wp", "I_burst", "D_WPT"}),
+    "damped": frozenset({"C_damp", "alpha_hat", "Q_MP", "Delta_J", "eta_dict"}),
+}
+
+
+def feature_names_for_families(families: tuple[str, ...] | list[str] | set[str]) -> frozenset[str]:
+    """Expand feature-family names into a base-feature allowlist."""
+    unknown = set(families) - set(FEATURE_FAMILIES)
+    if unknown:
+        raise ValueError(f"Unknown feature families: {sorted(unknown)}")
+    return frozenset().union(*(FEATURE_FAMILIES[name] for name in families))
+
+
 def _line_slope(x: np.ndarray, y: np.ndarray) -> float:
     if len(x) < 2 or np.allclose(y, y[0]):
         return 0.0
@@ -95,20 +131,39 @@ def _spectral_kurtosis(power: np.ndarray, eps: float) -> np.ndarray:
     return mean_p2 / (mean_p ** 2 + eps) - 2.0
 
 
-def _damped_atom_match(values: np.ndarray, sample_rate: float, freqs_hz: tuple[float, ...], decays_ms: tuple[float, ...], eps: float) -> tuple[float, np.ndarray]:
-    time_axis = np.arange(len(values), dtype=float) / sample_rate
+def _damped_atom_match(
+    values: np.ndarray,
+    sample_rate: float,
+    freqs_hz: tuple[float, ...],
+    decays_ms: tuple[float, ...],
+    eps: float,
+    start_indices: tuple[int, ...] = (0,),
+) -> tuple[float, np.ndarray]:
+    """Match causal damped sinusoids while being invariant to sine/cosine phase."""
+    sample_axis = np.arange(len(values), dtype=float)
     values_norm = np.linalg.norm(values) + eps
     best_score = 0.0
     best_atom = np.zeros_like(values)
-    for freq_hz in freqs_hz:
-        for decay_ms in decays_ms:
-            tau = decay_ms / 1_000.0
-            atom = np.exp(-time_axis / max(tau, eps)) * np.cos(2.0 * np.pi * freq_hz * time_axis)
-            atom_norm = np.linalg.norm(atom) + eps
-            score = float(abs(np.dot(values, atom)) / (values_norm * atom_norm))
-            if score > best_score:
-                best_score = score
-                best_atom = atom / atom_norm
+    starts = tuple(sorted({max(0, min(int(i), len(values) - 1)) for i in start_indices})) if len(values) else (0,)
+    for start_idx in starts:
+        rel_t = np.maximum(sample_axis - start_idx, 0.0) / sample_rate
+        causal = sample_axis >= start_idx
+        for freq_hz in freqs_hz:
+            phase = 2.0 * np.pi * freq_hz * rel_t
+            for decay_ms in decays_ms:
+                tau = decay_ms / 1_000.0
+                decay = causal * np.exp(-rel_t / max(tau, eps))
+                basis = np.column_stack((decay * np.cos(phase), decay * np.sin(phase)))
+                try:
+                    q, _ = np.linalg.qr(basis, mode="reduced")
+                except np.linalg.LinAlgError:
+                    continue
+                coefficients = q.T @ values
+                projection_norm = float(np.linalg.norm(coefficients))
+                score = projection_norm / values_norm
+                if score > best_score and projection_norm > eps:
+                    best_score = score
+                    best_atom = (q @ coefficients) / projection_norm
     return best_score, best_atom
 
 
@@ -144,15 +199,29 @@ def _ridge_band_energy(
 
     skip_clipped=True 时跳过邻域超出 STFT 频率轴范围的帧，避免边缘部分积分偏置。
     """
+    return float(np.sum(
+        _ridge_band_energy_per_frame(power, freqs, ridge_f, half_width, skip_clipped),
+        dtype=np.float64,
+    ))
+
+
+def _ridge_band_energy_per_frame(
+    power: np.ndarray,
+    freqs: np.ndarray,
+    ridge_f: np.ndarray,
+    half_width: float | np.ndarray,
+    skip_clipped: bool = True,
+) -> np.ndarray:
+    """Return per-frame ridge-neighbourhood energy using the same rules as the total."""
     if power.ndim != 2 or len(freqs) == 0 or len(ridge_f) == 0:
-        return 0.0
+        return np.zeros(power.shape[1] if power.ndim == 2 else 0, dtype=np.float64)
     n_frames = power.shape[1]
     if n_frames == 0:
-        return 0.0
+        return np.zeros(0, dtype=np.float64)
     hw = np.broadcast_to(np.asarray(half_width, dtype=float), (n_frames,))
     f_lo = float(freqs[0])
     f_hi = float(freqs[-1])
-    total = 0.0
+    per_frame = np.zeros(n_frames, dtype=np.float64)
     for t in range(n_frames):
         f = float(ridge_f[t])
         if not np.isfinite(f) or f <= 0.0:
@@ -160,20 +229,15 @@ def _ridge_band_energy(
         if skip_clipped and (f - hw[t] < f_lo or f + hw[t] > f_hi):
             continue
         idx = np.abs(freqs - f) <= hw[t]
-        total += float(np.sum(power[idx, t]))
-    return total
+        per_frame[t] = float(np.sum(power[idx, t], dtype=np.float64))
+    return per_frame
 
 
-def _node_center_hz(path: str, fs: float) -> float:
-    """小波包子带中心频率：按 path 的 a/d 逐层对半划分 0..fs/2 频率轴。"""
-    lo, hi = 0.0, fs / 2.0
-    for ch in path:
-        mid = 0.5 * (lo + hi)
-        if ch == "d":
-            lo = mid
-        else:
-            hi = mid
-    return 0.5 * (lo + hi)
+def _node_center_hz(frequency_index: int, node_count: int, fs: float) -> float:
+    """WPT centre frequency from PyWavelets' explicit frequency ordering."""
+    if node_count <= 0:
+        return 0.0
+    return (float(frequency_index) + 0.5) * (fs / 2.0) / float(node_count)
 
 
 def compute_all_features(context: FeatureContext) -> FeatureResult:
@@ -198,6 +262,7 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     after_energy = float(np.sum(energy_env[peak_idx + 1:offset_idx + 1]))
 
     features: dict[str, float] = {}
+    requested = context.requested_features
 
     features["r_p"] = float((peak_t - on_t) / duration)
     features["C_E"] = float(np.sum(time_axis * energy_env) / (np.sum(energy_env) + eps))
@@ -238,11 +303,32 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     else:
         features["beta_H"] = _line_slope(context.stft_times, np.log(high_energy + eps)) if high_energy.size else 0.0
 
-    prob_tf = context.stft_power / (np.sum(context.stft_power) + eps)
+    total_power = float(np.sum(context.stft_power, dtype=np.float64))
+    prob_tf = np.asarray(context.stft_power, dtype=np.float64) / (total_power + eps)
     features["H_tf"] = float(-np.sum(prob_tf * np.log(prob_tf + eps)))
     power_spectrum = np.mean(context.stft_power, axis=1) if context.stft_power.size else np.zeros(0)
     features["SF"] = float(np.exp(np.mean(np.log(power_spectrum + eps))) / (np.mean(power_spectrum) + eps)) if power_spectrum.size else 0.0
     features["H_alpha"] = _renyi_entropy(prob_tf, params.renyi_alpha, eps) if prob_tf.size else 0.0
+
+    # Local background diagnostics.  Use event bounds when possible and fall back to the leading
+    # fraction of the window.  These are observability diagnostics, not class labels.
+    frame_energy = np.sum(context.stft_power, axis=0, dtype=np.float64) if context.stft_power.size else np.zeros(0)
+    event_frames = ((context.stft_times >= on_t) & (context.stft_times <= off_t)) if context.stft_times.size else np.zeros(0, dtype=bool)
+    background_frames = ~event_frames if event_frames.size else np.zeros(0, dtype=bool)
+    min_bg = max(1, int(math.ceil(params.background_fraction * len(frame_energy)))) if frame_energy.size else 0
+    if frame_energy.size and np.sum(background_frames) < min_bg:
+        background_frames = np.zeros(len(frame_energy), dtype=bool)
+        background_frames[:min_bg] = True
+        event_frames = ~background_frames
+    bg_mean = float(np.mean(frame_energy[background_frames])) if np.any(background_frames) else 0.0
+    event_mean = float(np.mean(frame_energy[event_frames])) if np.any(event_frames) else 0.0
+    features["SNR_band_db"] = float(10.0 * np.log10((event_mean + eps) / (bg_mean + eps)))
+    features["E_excess"] = float(max(np.sum(frame_energy[event_frames], dtype=np.float64) - bg_mean * np.sum(event_frames), 0.0)) if frame_energy.size else 0.0
+    high_frame_energy = np.asarray(high_energy, dtype=np.float64)
+    high_bg = float(np.mean(high_frame_energy[background_frames])) if high_frame_energy.size and np.any(background_frames) else 0.0
+    high_event = float(np.mean(high_frame_energy[event_frames])) if high_frame_energy.size and np.any(event_frames) else 0.0
+    features["SNR_high_db"] = float(10.0 * np.log10((high_event + eps) / (high_bg + eps)))
+    features["high_observable"] = float(features["SNR_high_db"] >= params.observable_snr_db and high_event > eps)
 
     # 帧有效性（主带帧能量门限），rho_r 与后续脊线统计共用
     active = _ridge_active_frames(context)
@@ -279,10 +365,21 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
         rel_hw1 = np.maximum(2.0 * bin_hz, params.ridge_relative_bandwidth * np.maximum(context.ridge_f1, 0.0))
         rel_hw2 = np.maximum(2.0 * bin_hz, params.ridge_relative_bandwidth * np.maximum(context.ridge_f2, 0.0))
         e1 = _ridge_band_energy(context.stft_power, context.stft_freqs, context.ridge_f1, rel_hw1)
-        e2 = _ridge_band_energy(context.stft_power, context.stft_freqs, context.ridge_f2, rel_hw2)
+        e2_per_frame = _ridge_band_energy_per_frame(
+            context.stft_power, context.stft_freqs, context.ridge_f2, rel_hw2,
+        )
+        e2 = float(np.sum(e2_per_frame, dtype=np.float64))
     else:
         e1, e2 = 0.0, 0.0
+        e2_per_frame = np.zeros_like(frame_energy, dtype=np.float64)
     features["R_2_1"] = float(e2 / (e1 + eps))
+    h2_bg = float(np.mean(e2_per_frame[background_frames])) if e2_per_frame.size and np.any(background_frames) else 0.0
+    h2_event = float(np.mean(e2_per_frame[event_frames])) if e2_per_frame.size and np.any(event_frames) else 0.0
+    h2_snr_db = float(10.0 * np.log10((h2_event + eps) / (h2_bg + eps)))
+    features["H2_observable"] = float(
+        h2_event > eps and np.any(context.ridge_f2 > 0.0)
+        and h2_snr_db >= params.observable_snr_db
+    )
 
     # H_stack：1×/2×/3×f1 谐波位置 ±相对带宽 带内积分
     harmonic_stack = 0.0
@@ -304,6 +401,9 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
 
     features["epsilon_2x"] = float(np.median(diff_h2[active] / (context.ridge_f1[active] + eps))) if np.any(active) else 0.0
     features["C_h"] = float(np.mean(diff_h2[active])) if np.any(active) else 0.0
+    if not bool(features["H2_observable"]):
+        for key in ("H2_ratio", "R_2_1", "R_h", "epsilon_2x", "C_h"):
+            features[key] = float("nan")
     features["R_harm"] = float(context.harmonic_energy / (context.total_energy_tf + eps))
     features["Ridge_coh"] = features["R_harm"]  # 兼容别名列：与 R_harm 同值，已停用（不参与模型选择）
 
@@ -332,12 +432,17 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     features["C_f"] = float(np.mean(np.abs(curvature_valid) / (np.mean(np.abs(ridge_valid_f1)) + eps))) if curvature_valid.size and ridge_valid_f1.size else 0.0
 
     features["E_harm"] = float(context.harmonic_energy)
-    features["E_res"] = float(np.sum(context.residual_power))
+    features["E_res"] = float(np.sum(context.residual_power, dtype=np.float64))
     features["rho_res"] = float(features["E_res"] / (context.total_energy_tf + eps))
-    high_res_energy = float(np.sum(context.residual_power[_band_mask(context.stft_freqs, params.harmonic_band_hz), :]))
+    high_res_energy = float(np.sum(context.residual_power[_band_mask(context.stft_freqs, params.harmonic_band_hz), :], dtype=np.float64))
     features["R_high_res"] = float(high_res_energy / (context.total_energy_tf + eps))
-    features["epsilon_rec"] = float(np.sum((signal_values - context.reconstructed_signal) ** 2) / (np.sum(signal_values ** 2) + eps))
-    residual_ratio_per_frame = np.sum(context.residual_power, axis=0) / (np.sum(context.stft_power, axis=0) + eps) if context.residual_power.size else np.zeros(0)
+    # The time-domain residual is uniquely defined by ISTFT((1-M)X); do not create a second
+    # residual through subtraction, which can differ at padding/boundary samples.
+    features["epsilon_rec"] = float(
+        np.sum(np.asarray(residual, dtype=np.float64) ** 2, dtype=np.float64)
+        / (np.sum(np.asarray(signal_values, dtype=np.float64) ** 2, dtype=np.float64) + eps)
+    )
+    residual_ratio_per_frame = np.sum(context.residual_power, axis=0, dtype=np.float64) / (np.sum(context.stft_power, axis=0, dtype=np.float64) + eps) if context.residual_power.size else np.zeros(0)
     features["N_abn"] = float(np.sum(residual_ratio_per_frame > params.residual_abnormal_threshold))
 
     # F_peak：逐频点功率正增量（半波整流）后求和；prepend 用首帧自身使首帧通量=0
@@ -368,6 +473,9 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
         features["T_half_high"] = float(below[0] / fs)
     else:
         features["T_half_high"] = float("nan")
+    if not bool(features["high_observable"]):
+        features["beta_H"] = float("nan")
+        features["T_half_high"] = float("nan")
 
     sc_res = _spectral_centroid(context.stft_freqs, context.residual_power, eps)
     low_res = _framewise_energy(context.residual_power, _band_mask(context.stft_freqs, params.low_band_hz))
@@ -386,45 +494,62 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     after = float(np.sum(residual[peak_idx:stop] ** 2))
     features["eta_asym"] = float(after / (before + eps))
 
-    total_wp = float(sum(context.wavelet_node_energies.values())) + eps
-    sorted_nodes = sorted(context.wavelet_node_energies.items())
-    for node_name, energy in sorted_nodes:
-        features[f"R_wp_{node_name}"] = float(energy / total_wp)
-    wp_prob = np.asarray([energy / total_wp for _, energy in sorted_nodes], dtype=float)
-    features["H_wp"] = float(-np.sum(wp_prob * np.log(wp_prob + eps))) if wp_prob.size else 0.0
-    features["I_burst"] = float(np.max(wp_prob) / (np.median(wp_prob) + eps)) if wp_prob.size else 0.0
+    need_wavelet = requested is None or bool(requested & FEATURE_FAMILIES["wavelet"])
+    if need_wavelet:
+        total_wp = float(sum(context.wavelet_node_energies.values())) + eps
+        # compute_wavelet_node_energies preserves PyWavelets order='freq'; do not alphabetically sort
+        # paths because wavelet-packet paths use frequency reversals/Gray ordering.
+        sorted_nodes = list(context.wavelet_node_energies.items())
+        for node_name, energy in sorted_nodes:
+            features[f"R_wp_{node_name}"] = float(energy / total_wp)
+        wp_prob = np.asarray([energy / total_wp for _, energy in sorted_nodes], dtype=float)
+        features["H_wp"] = float(-np.sum(wp_prob * np.log(wp_prob + eps))) if wp_prob.size else 0.0
+        features["I_burst"] = float(np.max(wp_prob) / (np.median(wp_prob) + eps)) if wp_prob.size else 0.0
 
-    # D_WPT：按"子带中心频率 > 主带几何中点"划分 HF/LF 节点集合
-    if context.wavelet_node_energies:
-        main_lo, main_hi = params.main_band_hz
-        geo_mid = math.sqrt(max(main_lo, 1e-9) * max(main_hi, 1e-9))
-        hf_energy = 0.0
-        for node_name, energy in context.wavelet_node_energies.items():
-            if _node_center_hz(node_name, fs) > geo_mid:
-                hf_energy += energy
-        lf_energy = max(total_wp - hf_energy, 0.0)
-        features["D_WPT"] = float((hf_energy - lf_energy) / total_wp)
-    else:
-        features["D_WPT"] = 0.0
+        if context.wavelet_node_energies:
+            main_lo, main_hi = params.main_band_hz
+            geo_mid = math.sqrt(max(main_lo, 1e-9) * max(main_hi, 1e-9))
+            hf_energy = 0.0
+            node_count = len(context.wavelet_node_energies)
+            for frequency_index, (_node_name, energy) in enumerate(context.wavelet_node_energies.items()):
+                if _node_center_hz(frequency_index, node_count, context.wavelet_sample_rate) > geo_mid:
+                    hf_energy += energy
+            lf_energy = max(total_wp - hf_energy, 0.0)
+            features["D_WPT"] = float((hf_energy - lf_energy) / total_wp)
+        else:
+            features["D_WPT"] = 0.0
 
-    c_damp, best_atom = _damped_atom_match(residual, fs, params.damped_freqs_hz, params.damped_decay_ms, eps)
-    features["C_damp"] = c_damp
-    residual_env = np.maximum(residual_env, eps)
-    # alpha_hat：残差包络对数在 峰值→事件终点 的峰后窗拟合（衰减常数），避免上升段污染
-    seg_end = max(peak_idx + 1, min(offset_idx, len(residual_env) - 1))
-    if seg_end - peak_idx >= 2:
-        features["alpha_hat"] = float(-_line_slope(time_axis[peak_idx:seg_end + 1], np.log(residual_env[peak_idx:seg_end + 1])))
-    else:
-        features["alpha_hat"] = float(-_line_slope(time_axis, np.log(residual_env)))
-    features["Q_MP"] = rank2_hankel_quality(residual, eps=eps, max_cols=128)
-    projection = float(np.dot(residual, best_atom))
-    damage_component = projection * best_atom
-    baseline_error = float(np.sum((signal_values - context.reconstructed_signal) ** 2))
-    enhanced_error = float(np.sum((signal_values - context.reconstructed_signal - damage_component) ** 2))
-    features["Delta_J"] = float((baseline_error - enhanced_error) / (np.sum(signal_values ** 2) + eps))
-    harm_coeff = float(np.linalg.norm(context.reconstructed_signal, ord=1))
-    dmg_coeff = float(np.linalg.norm(damage_component, ord=1))
-    features["eta_dict"] = float(dmg_coeff / (harm_coeff + dmg_coeff + eps))
+    need_damped = requested is None or bool(requested & FEATURE_FAMILIES["damped"])
+    if need_damped:
+        residual_env_for_start = smooth_envelope(residual, fs, params.envelope_smooth_ms)
+        residual_peak_idx = int(np.argmax(residual_env_for_start)) if residual_env_for_start.size else peak_idx
+        c_damp, best_atom = _damped_atom_match(
+            residual, fs, params.damped_freqs_hz, params.damped_decay_ms, eps,
+            start_indices=(onset_idx, residual_peak_idx),
+        )
+        features["C_damp"] = c_damp
+        residual_env = np.maximum(residual_env, eps)
+        seg_end = max(peak_idx + 1, min(offset_idx, len(residual_env) - 1))
+        if seg_end - peak_idx >= 2:
+            features["alpha_hat"] = float(-_line_slope(time_axis[peak_idx:seg_end + 1], np.log(residual_env[peak_idx:seg_end + 1])))
+        else:
+            features["alpha_hat"] = float("nan")
+        features["Q_MP"] = rank2_hankel_quality(residual, eps=eps, max_cols=128)
+        projection = float(np.dot(residual, best_atom))
+        damage_component = projection * best_atom
+        baseline_error = float(np.sum((signal_values - context.reconstructed_signal) ** 2, dtype=np.float64))
+        enhanced_error = float(np.sum((signal_values - context.reconstructed_signal - damage_component) ** 2, dtype=np.float64))
+        features["Delta_J"] = float((baseline_error - enhanced_error) / (np.sum(signal_values ** 2, dtype=np.float64) + eps))
+        harm_coeff = float(np.linalg.norm(context.reconstructed_signal, ord=1))
+        dmg_coeff = float(np.linalg.norm(damage_component, ord=1))
+        features["eta_dict"] = float(dmg_coeff / (harm_coeff + dmg_coeff + eps))
+
+    if requested is not None:
+        features = {
+            key: value
+            for key, value in features.items()
+            if key in requested or (key.startswith("R_wp_") and "H_wp" in requested)
+        }
 
     return FeatureResult(
         sample_id=context.record.sample_id,
