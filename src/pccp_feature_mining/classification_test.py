@@ -88,6 +88,7 @@ def _feature_order_for_comparison(
     comparison: str,
     feature_discrimination: pd.DataFrame,
     final_ranking: pd.DataFrame,
+    comparison_feature_order: dict[str, str] | None = None,
 ) -> list[str]:
     """优先使用对应比较任务的单特征分数，缺失时退回最终总排名。"""
 
@@ -98,6 +99,8 @@ def _feature_order_for_comparison(
         "BK05_vs_NONBK05": "BK05_NONBK05",
         "BK_vs_NONBK": "BK_NONBK",
     }
+    if comparison_feature_order:
+        mapping.update(comparison_feature_order)
     key = mapping.get(comparison)
     subset = feature_discrimination[feature_discrimination["comparison"].eq(key)] if key else pd.DataFrame()
     if not subset.empty:
@@ -127,6 +130,8 @@ def run_classification_tests(
     train_ratio: float = 0.7,
     max_train_rows_per_class: int | None = 3000,
     random_state: int = 42,
+    comparisons: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
+    comparison_feature_order: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """对五个关键任务做分类验证，并输出推荐特征数量。"""
 
@@ -137,8 +142,9 @@ def run_classification_tests(
     rows: list[dict[str, object]] = []
     feature_rows: list[dict[str, object]] = []
     models = _build_models(random_state)
+    active_comparisons = CLASSIFICATION_COMPARISONS if comparisons is None else comparisons
 
-    for comparison, (pos_labels, neg_labels) in CLASSIFICATION_COMPARISONS.items():
+    for comparison, (pos_labels, neg_labels) in active_comparisons.items():
         labels = frame["source_label"].astype(str)
         subset = frame.loc[labels.isin(pos_labels + neg_labels)].copy()
         if subset.empty:
@@ -153,7 +159,12 @@ def run_classification_tests(
         train_frame = train_frame.loc[sampled_train_idx]
         y_train = y_all.loc[sampled_train_idx]
 
-        ordered_features = _feature_order_for_comparison(comparison, feature_discrimination, final_ranking)
+        ordered_features = _feature_order_for_comparison(
+            comparison,
+            feature_discrimination,
+            final_ranking,
+            comparison_feature_order=comparison_feature_order,
+        )
         for k in feature_counts:
             selected = [f for f in ordered_features[:k] if f in frame.columns]
             if not selected or y_train.nunique() < 2 or y_test.nunique() < 2:

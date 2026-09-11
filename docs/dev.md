@@ -1413,3 +1413,26 @@
 - GitHub 上传日志：
   - 首次同步（修改前）：提交并推送 `7474388`（含核对报告、DATA09 v0 系列 notebook、字典 docx、工具脚本与 `.gitignore`，仅限 docs/notebooks/src/tools + .gitignore）。
   - 本次修改后：再次提交并推送（见本次提交信息）。
+
+## 2026-09-11（PCCP特征挖掘Notebook按工况重构）
+
+- 本次更新范围：`notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb`、`src/pccp_feature_mining/classification_test.py`、`tools/update_pccp_condition_notebook.py`、`docs/dev.md`。
+- 任务背景：特征分析的核心目标调整为“寻找断丝信号与其他信号的区别”，并按从简单到复杂的顺序先分析单一流速，再分析多工况合并。
+- Notebook 结构调整：
+  - 第 4 节改为“静水工况（0 m/s）断丝特征分析与测试”，正类 `BK00`，负类 `FL00+QJ00`；包含 4.1 冗余分析、4.2 多特征组合搜索、4.3 稳定性分析、4.4 最终特征选择结论、4.5 分类测试。
+  - 第 5 节改为“0.5 m/s 工况断丝特征分析与测试”，正类 `BK05`，负类 `FL05+QJ05`；章节结构与第 4 节一致。
+  - 第 6 节改为“多工况断丝特征分析与测试”，正类 `BK00+BK05`，负类 `FL00+FL05+QJ00+QJ05`；用于检验跨流速通用特征。
+  - 第 7 节改为“跨流速特征一致性分析”，对比 4.4、5.4、6.4 的最终特征与 4.5、5.5、6.5 的分类结果。
+  - 第 8 节汇总三类工况推荐特征包，第 9 节记录复现实验与结果审计，第 10 节提供分工况一键运行入口。
+- 方法说明增强：
+  - 各小节补充中文目的说明、Pearson/Spearman/mRMR/ReliefF/SFS/Bootstrap/分类指标的必要公式和符号解释。
+  - 表格展示统一限制为最多 10 行；完整结果仍写入 `RUN_DIR` 下的 CSV。
+  - 最终特征选择由单特征判别、Bootstrap 稳定性、mRMR 排名和冗余惩罚融合，并输出排序图与 Top 特征箱线图。
+- 程序更新：
+  - `classification_test.run_classification_tests()` 新增可选 `comparisons` 与 `comparison_feature_order` 参数，默认行为不变；Notebook 可只运行当前工况对应的分类任务，避免重复执行无关比较。
+  - 新增 `tools/update_pccp_condition_notebook.py`，用于按 UTF-8 稳定重建 Notebook 第 04-10 节，避免手动编辑大段 ipynb JSON。
+- 自检记录：
+  - `python tools/update_pccp_condition_notebook.py` 成功生成 94 个 notebook 单元；
+  - notebook JSON 重新读取通过；
+  - `rg` 检查确认 notebook 中不再存在 `rows=20/30/50/100` 这类超过 10 行展示参数；
+  - `python -m py_compile src/pccp_feature_mining/classification_test.py tools/update_pccp_condition_notebook.py` 通过。
