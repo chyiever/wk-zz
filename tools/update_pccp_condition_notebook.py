@@ -511,6 +511,339 @@ def run_condition_feature_mining_notebook() -> dict[str, pd.DataFrame]:
     return cells
 
 
+def expand_static_water_developer_sections(cells: list[dict[str, object]]) -> list[dict[str, object]]:
+    """把第4节的4.2/4.3/4.5展开为开发者可读的三级小节。"""
+
+    def first_line(cell: dict[str, object]) -> str:
+        return "".join(cell.get("source", [])).strip().splitlines()[0]
+
+    start = next(i for i, cell in enumerate(cells) if first_line(cell).startswith("### 4.2 "))
+    end = next(i for i, cell in enumerate(cells) if first_line(cell).startswith("## 05 "))
+
+    expanded = [
+        md(
+            """
+### 4.2 静水工况下的多特征组合搜索
+
+本节目标为 `BK00_NONBK00`。这里不再用一个函数一口气跑完，而是按开发流程拆成算法说明、mRMR、ReliefF、SFS 和综合对比，便于检查每一步的输入、输出与中间产物。
+"""
+        ),
+        md(
+            """
+#### 4.2.1 特征选择算法原理与参数表
+
+mRMR 每一步选择兼顾判别力和低冗余的特征：
+$$\\mathrm{score}(f)=D(f)-\\lambda\\frac{1}{|S|}\\sum_{g\\in S}|\\rho(f,g)|$$
+其中 $D(f)$ 为 `BK00_NONBK00` 单特征判别分，$S$ 为已选集合，$\\lambda$ 为冗余惩罚权重。
+
+ReliefF 从局部邻域判断特征能否拉开异类、压近同类；SFS 则每轮加入使 LDA 交叉验证 AUC 最大的特征：
+$$f_t^*=\\arg\\max_{f\\in C_t}\\mathrm{AUC}_{LDA}(S_t\\cup\\{f\\})$$
+"""
+        ),
+        code(
+            """
+v0_task = _task('v0')
+v0_result = _result('v0')
+v0_algorithm_parameters = pd.DataFrame([
+    {'步骤': 'mRMR排序', '输入': 'BK00_NONBK00单特征判别分 + Spearman相关矩阵', '关键参数': f\"top_n={CONFIG.mrmr_top_n}; redundancy_weight={CONFIG.mrmr_redundancy_weight}\", '输出': 'v0_mrmr_rank'},
+    {'步骤': 'mRMR前缀评估', '输入': 'mRMR排序前K个特征', '关键参数': f\"K={CONFIG.combination_feature_counts}; LDA交叉验证\", '输出': 'v0_mrmr_prefix'},
+    {'步骤': '近似ReliefF', '输入': '标准化后的BK00/non-BK00特征矩阵', '关键参数': '近邻hit/miss距离贡献', '输出': 'v0_relieff_rank'},
+    {'步骤': 'SFS前向搜索', '输入': 'mRMR前N + ReliefF前N候选并集', '关键参数': f\"candidate_count={CONFIG.sfs_candidate_count}; max_selected={CONFIG.sfs_max_selected}\", '输出': 'v0_sfs_selection_path'},
+    {'步骤': '综合对比', '输入': 'mRMR前缀 + SFS路径', '关键参数': '按cv_auc_abs与lda_separation排序', '输出': 'v0_feature_combination_search'},
+])
+show_table('4.2.1 静水工况组合搜索算法与参数', v0_algorithm_parameters, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.2.2 mRMR排序与前缀组合评估
+
+本小节先从过滤式角度得到低冗余候选序列，再测试前 $K$ 个特征直接组成线性判别组合时的表现。若前缀组合很快达到高 AUC，说明少量特征已经足以表达静水断丝差异。
+"""
+        ),
+        code(
+            """
+v0_mrmr_rank = run_mrmr_ranking(
+    relevance=v0_result['relevance'],
+    corr=v0_result['spearman_corr'],
+    top_n=CONFIG.mrmr_top_n,
+    redundancy_weight=CONFIG.mrmr_redundancy_weight,
+)
+v0_mrmr_prefix = evaluate_mrmr_prefixes(
+    df,
+    v0_mrmr_rank,
+    feature_cols,
+    positive_labels=v0_task['positive_labels'],
+    negative_labels=v0_task['negative_labels'],
+    counts=CONFIG.combination_feature_counts,
+    random_state=CONFIG.random_state,
+)
+if not v0_mrmr_prefix.empty and 'comparison' in v0_mrmr_prefix.columns:
+    v0_mrmr_prefix['comparison'] = v0_task['comparison']
+
+v0_result.update({'mrmr_rank': v0_mrmr_rank, 'mrmr_prefix': v0_mrmr_prefix})
+write_csv(add_feature_meaning_columns(v0_mrmr_rank), _task_path(v0_task, 'mrmr_rank.csv'))
+write_csv(add_feature_meaning_columns(v0_mrmr_prefix), _task_path(v0_task, 'feature_combination_mrmr_prefix.csv'))
+show_table('4.2.2 静水工况mRMR特征排序', v0_mrmr_rank, rows=10)
+show_table('4.2.2 静水工况mRMR前缀组合评价', v0_mrmr_prefix, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.2.3 近似ReliefF局部邻域排序
+
+ReliefF 与 mRMR 的视角互补：mRMR 更强调整体判别分和相关冗余，ReliefF 更关注局部邻域中“同类近、异类远”的结构。若两个排序反复出现同一特征，说明该特征既有全局判别力，也有局部结构稳定性。
+"""
+        ),
+        code(
+            """
+v0_relieff_rank = relief_like_ranking(
+    df,
+    feature_cols,
+    positive_labels=v0_task['positive_labels'],
+    negative_labels=v0_task['negative_labels'],
+    random_state=CONFIG.random_state,
+)
+v0_result['relieff_rank'] = v0_relieff_rank
+write_csv(add_feature_meaning_columns(v0_relieff_rank), _task_path(v0_task, 'relieff_rank.csv'))
+show_table('4.2.3 静水工况近似ReliefF特征排序', v0_relieff_rank, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.2.4 SFS顺序前向组合搜索
+
+SFS 是包装式搜索：它不只看单个特征，而是直接评估“已选组合 + 一个候选特征”的 LDA 交叉验证效果。该步骤用于判断是否存在 mRMR/ReliefF 单变量排序看不出的组合增益。
+"""
+        ),
+        code(
+            """
+v0_sfs_candidates = list(dict.fromkeys(
+    v0_mrmr_rank['feature'].head(CONFIG.sfs_candidate_count).tolist()
+    + v0_relieff_rank['feature'].head(CONFIG.sfs_candidate_count).tolist()
+))
+v0_sfs_selection_path = sequential_forward_search(
+    df,
+    v0_sfs_candidates,
+    feature_cols,
+    positive_labels=v0_task['positive_labels'],
+    negative_labels=v0_task['negative_labels'],
+    max_selected=CONFIG.sfs_max_selected,
+    random_state=CONFIG.random_state,
+)
+if not v0_sfs_selection_path.empty and 'comparison' in v0_sfs_selection_path.columns:
+    v0_sfs_selection_path['comparison'] = v0_task['comparison']
+
+v0_result['sfs_selection_path'] = v0_sfs_selection_path
+write_csv(add_feature_meaning_columns(v0_sfs_selection_path), _task_path(v0_task, 'sfs_selection_path.csv'))
+show_table('4.2.4 静水工况SFS逐步选择路径', v0_sfs_selection_path, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.2.5 多方法组合结果对比
+
+本小节把 mRMR 前缀组合与 SFS 路径合并为统一表。优先关注 `cv_auc_abs` 高、`lda_separation` 高且特征数量较少的组合；如果高性能组合包含大量冗余特征，需要回到 4.1 检查解释成本。
+"""
+        ),
+        code(
+            """
+if v0_sfs_selection_path.empty:
+    v0_feature_combination_search = v0_mrmr_prefix.copy()
+else:
+    v0_feature_combination_search = pd.concat([
+        v0_mrmr_prefix,
+        v0_sfs_selection_path.rename(columns={'step': 'sfs_step'})[
+            ['method', 'comparison', 'feature_count', 'cv_auc_abs', 'lda_separation', 'selected_features']
+        ],
+    ], ignore_index=True, sort=False)
+
+v0_result['feature_combination_search'] = v0_feature_combination_search
+write_csv(add_feature_meaning_columns(v0_feature_combination_search), _task_path(v0_task, 'feature_combination_search.csv'))
+show_table('4.2.5 静水工况多特征组合搜索对比', v0_feature_combination_search.sort_values('cv_auc_abs', ascending=False), rows=10)
+"""
+        ),
+        md(
+            """
+### 4.3 静水工况下的特征稳定性分析
+
+稳定性分析用于回答“这个特征是否只是偶然在某次抽样中靠前”。本节拆成参数审计、Bootstrap 排名计算和稳定特征解读三步。
+"""
+        ),
+        md(
+            """
+#### 4.3.1 Bootstrap稳定性参数审计
+
+每轮保留全部 `BK00`，并从 `FL00+QJ00` 中抽取等量非断丝样本。Top-K 频率定义为：
+$$\\mathrm{freq}_K(f)=\\frac{1}{B}\\sum_{b=1}^B\\mathbf{1}[\\mathrm{rank}_b(f)\\le K]$$
+"""
+        ),
+        code(
+            """
+v0_stability_frame = v0_result.get('frame', _task_frame(v0_task))
+v0_positive_rows = int(v0_stability_frame['source_label'].isin(v0_task['positive_labels']).sum())
+v0_negative_rows = int(v0_stability_frame['source_label'].isin(v0_task['negative_labels']).sum())
+v0_bootstrap_parameter_table = pd.DataFrame([
+    {'参数': 'positive_labels', '当前值': ','.join(v0_task['positive_labels']), '含义': '断丝正类标签'},
+    {'参数': 'negative_labels', '当前值': ','.join(v0_task['negative_labels']), '含义': '非断丝负类标签'},
+    {'参数': 'positive_rows', '当前值': v0_positive_rows, '含义': '每轮保留的断丝样本上限'},
+    {'参数': 'negative_rows', '当前值': v0_negative_rows, '含义': '非断丝候选池样本量'},
+    {'参数': 'bootstrap_rounds', '当前值': CONFIG.bootstrap_rounds, '含义': '重复抽样轮数'},
+    {'参数': 'bootstrap_top_ks', '当前值': str(CONFIG.bootstrap_top_ks), '含义': '统计进入Top-K集合的频率'},
+    {'参数': 'random_state', '当前值': CONFIG.random_state, '含义': '随机数种子，保证结果可复现'},
+])
+show_table('4.3.1 静水工况Bootstrap稳定性参数', v0_bootstrap_parameter_table, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.3.2 Bootstrap排名稳定性计算
+
+本小节真正运行 Bootstrap 排名稳定性分析，并输出平均名次、名次标准差、平均 AUC lift 与 Top-K 频率。完整结果写入 CSV，notebook 中只展示前 10 行。
+"""
+        ),
+        code(
+            """
+v0_feature_stability = run_bootstrap_stability(
+    v0_stability_frame,
+    feature_cols,
+    rounds=CONFIG.bootstrap_rounds,
+    top_ks=CONFIG.bootstrap_top_ks,
+    random_state=CONFIG.random_state,
+)
+v0_result['feature_stability'] = v0_feature_stability
+write_csv(add_feature_meaning_columns(v0_feature_stability), _task_path(v0_task, 'feature_stability.csv'))
+show_table('4.3.2 静水工况Bootstrap稳定特征', v0_feature_stability, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.3.3 稳定特征解读表
+
+本小节把稳定性表压缩成开发者更容易检查的解释表：包括平均名次、Top20频率、平均 AUC lift 和中文含义。若某个特征判别分高但 Top20 频率低，应视为不稳定候选。
+"""
+        ),
+        code(
+            """
+v0_stability_interpretation = add_feature_meaning_columns(
+    v0_feature_stability.head(20)[
+        ['feature', 'mean_rank', 'rank_std', 'mean_auc_lift', 'top20_frequency', 'rank_stability_score']
+    ].copy()
+)
+write_csv(v0_stability_interpretation, _task_path(v0_task, 'feature_stability_interpretation.csv'))
+show_table('4.3.3 静水工况稳定特征解读', v0_stability_interpretation, rows=10)
+"""
+        ),
+        md(
+            """
+### 4.4 静水工况下的最终特征选择结论
+
+最终分数融合单特征判别、Bootstrap 稳定性、mRMR 排名和冗余惩罚：
+$$S=\\frac{0.55D+0.25S_{stab}+0.20S_{mRMR}}{1+0.45P_{red}}$$
+其中 $D$ 为当前工况判别分，$S_{stab}$ 为稳定性分，$S_{mRMR}$ 为归一化 mRMR 排名分，$P_{red}$ 为与更优特征的最大相关冗余惩罚。
+"""
+        ),
+        code("v0_final_feature_ranking = run_condition_final('v0')"),
+        md(
+            """
+### 4.5 静水工况下的分类测试
+
+分类测试用于验证第 4.4 节得到的特征是否能支持实际断丝识别，而不只是排序靠前。本节按划分协议、模型与指标、运行结果、推荐组合四步展开。
+"""
+        ),
+        md(
+            """
+#### 4.5.1 训练/测试划分协议
+
+训练/测试按 `source_file_name` 分组划分，同一源文件不跨集合。这样可以降低同源窗口泄漏风险，比随机行划分更接近真实泛化评估。
+"""
+        ),
+        code(
+            """
+v0_classification_protocol = pd.DataFrame([
+    {'项目': '比较任务', '当前值': v0_task['classification'], '说明': '正类为BK00，负类为FL00+QJ00'},
+    {'项目': '分组字段', '当前值': 'source_file_name', '说明': '同一源文件内窗口不跨训练/测试集合'},
+    {'项目': '训练集比例', '当前值': '0.7', '说明': '在每个source_label内部按源文件组划分'},
+    {'项目': '训练集多数类上限', '当前值': CONFIG.classification_max_train_rows_per_class, '说明': '限制训练时间并减弱类别规模差异'},
+    {'项目': '测试集策略', '当前值': '保持分组划分后的真实分布', '说明': '不对测试集做平衡采样'},
+])
+show_table('4.5.1 静水工况分类划分协议', v0_classification_protocol, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.5.2 分类模型与评价指标
+
+本流程测试逻辑回归、线性 SVM 和 RBF-SVM。关键指标包括：
+$$\\mathrm{balanced\\ accuracy}=\\frac{1}{2}\\left(\\frac{TP}{TP+FN}+\\frac{TN}{TN+FP}\\right)$$
+$$\\mathrm{recall}_{BK}=\\frac{TP}{TP+FN},\\qquad \\mathrm{specificity}=\\frac{TN}{TN+FP}$$
+balanced accuracy 越高表示两类总体更均衡；断丝召回率越高表示漏检越少；特异度越高表示误报越少。
+"""
+        ),
+        code(
+            """
+v0_classification_metric_table = pd.DataFrame([
+    {'指标/模型': 'logistic_regression', '类型': '线性概率模型', '用途': '作为可解释线性基线'},
+    {'指标/模型': 'svm_linear', '类型': '最大间隔线性模型', '用途': '测试线性边界是否足够'},
+    {'指标/模型': 'svm_rbf', '类型': '非线性核模型', '用途': '测试是否存在非线性组合增益'},
+    {'指标/模型': 'balanced_accuracy', '类型': '评价指标', '用途': '正负类召回率平均，适合不均衡样本'},
+    {'指标/模型': 'auc', '类型': '评价指标', '用途': '排序能力，越接近1越好'},
+    {'指标/模型': 'recall_positive', '类型': '评价指标', '用途': '断丝召回率，越高漏检越少'},
+    {'指标/模型': 'specificity', '类型': '评价指标', '用途': '非断丝特异度，越高误报越少'},
+])
+show_table('4.5.2 静水工况分类模型与指标', v0_classification_metric_table, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.5.3 静水工况分类测试结果
+
+本小节运行实际分类测试。特征顺序优先使用 `BK00_NONBK00` 的单特征判别排序；若对应排序缺失，才退回第 4.4 节最终排序。
+"""
+        ),
+        code(
+            """
+v0_final_for_classifier = v0_result['final_ranking'].rename(columns={'condition_final_score': 'final_score'}).copy()
+v0_classification_results, v0_classification_recommendations = run_classification_tests(
+    df,
+    feature_discrimination=feature_discrimination,
+    final_ranking=v0_final_for_classifier,
+    output_dir=RUN_DIR / 'classification' / v0_task['short'],
+    feature_counts=CONFIG.classification_feature_counts,
+    max_train_rows_per_class=CONFIG.classification_max_train_rows_per_class,
+    random_state=CONFIG.random_state,
+    comparisons={v0_task['classification']: (v0_task['positive_labels'], v0_task['negative_labels'])},
+    comparison_feature_order={v0_task['classification']: v0_task['comparison']},
+)
+v0_result.update({'classification_results': v0_classification_results, 'classification_recommendations': v0_classification_recommendations})
+write_csv(add_feature_meaning_columns(v0_classification_results), _task_path(v0_task, 'classification_test_results.csv'))
+write_csv(add_feature_meaning_columns(v0_classification_recommendations), _task_path(v0_task, 'classification_recommendations.csv'))
+show_table('4.5.3 静水工况分类测试结果', v0_classification_results, rows=10)
+"""
+        ),
+        md(
+            """
+#### 4.5.4 静水工况分类推荐组合
+
+推荐组合按 `selection_score = 0.45*balanced_accuracy + 0.35*auc + 0.20*recall_positive` 排序，并在同等效果下优先选择特征数更少的方案。
+"""
+        ),
+        code(
+            """
+v0_classification_conclusion = v0_classification_recommendations.copy()
+if not v0_classification_conclusion.empty:
+    v0_classification_conclusion['recommended_feature_meaning'] = v0_classification_conclusion['recommended_features'].map(
+        lambda text: describe_feature_list(str(text).split(';'))
+    )
+write_csv(add_feature_meaning_columns(v0_classification_conclusion), _task_path(v0_task, 'classification_conclusion.csv'))
+show_table('4.5.4 静水工况分类推荐特征组合', v0_classification_conclusion, rows=10)
+"""
+        ),
+    ]
+
+    return cells[:start] + expanded + cells[end:]
+
+
 def main() -> None:
     nb = json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
     for cell in nb["cells"]:
@@ -521,7 +854,8 @@ def main() -> None:
             src = src.replace("rows=30", "rows=10")
             src = src.replace("rows=20", "rows=10")
             cell["source"] = src.splitlines(True)
-    nb["cells"] = nb["cells"][:36] + build_new_cells()
+    rebuilt_cells = nb["cells"][:36] + build_new_cells()
+    nb["cells"] = expand_static_water_developer_sections(rebuilt_cells)
     NOTEBOOK_PATH.write_text(json.dumps(nb, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"updated {NOTEBOOK_PATH} with {len(nb['cells'])} cells")
 

@@ -1436,3 +1436,21 @@
   - notebook JSON 重新读取通过；
   - `rg` 检查确认 notebook 中不再存在 `rows=20/30/50/100` 这类超过 10 行展示参数；
   - `python -m py_compile src/pccp_feature_mining/classification_test.py tools/update_pccp_condition_notebook.py` 通过。
+
+## 2026-09-12（PCCP Notebook 第4节开发者版展开）
+
+- 本次更新范围：`notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb`、`tools/update_pccp_condition_notebook.py`、`docs/dev.md`。
+- 调整原因：第 4 节的 4.2、4.3、4.5 原先通过单行函数调用完成，阅读上过于压缩；该 notebook 面向开发者，需要显式暴露中间变量、参数表、CSV 输出和结果表。
+- Notebook 展开内容：
+  - 4.2 “静水工况下的多特征组合搜索”拆为 4.2.1-4.2.5：算法原理与参数表、mRMR排序与前缀组合评估、近似ReliefF排序、SFS顺序前向搜索、多方法组合结果对比。
+  - 4.3 “静水工况下的特征稳定性分析”拆为 4.3.1-4.3.3：Bootstrap参数审计、Bootstrap排名稳定性计算、稳定特征解读表。
+  - 4.5 “静水工况下的分类测试”拆为 4.5.1-4.5.4：训练/测试划分协议、分类模型与评价指标、分类测试结果、分类推荐组合。
+- 生成脚本更新：
+  - 在 `tools/update_pccp_condition_notebook.py` 新增 `expand_static_water_developer_sections()`，先按原模板生成 04-10 节，再将第 4 节的 4.2-4.5 区间替换为开发者可读的展开单元。
+  - 5、6 节保持原有模板结构，避免本次改动范围发散；后续若需要也可复用同一思路继续展开。
+- 自检记录：
+  - `python tools/update_pccp_condition_notebook.py` 成功生成 115 个 notebook 单元；
+  - 第 4 节标题树确认包含 4.2.1-4.2.5、4.3.1-4.3.3、4.5.1-4.5.4；
+  - notebook 所有 code cell 通过 `ast.parse` 语法检查；
+  - `python -m py_compile tools/update_pccp_condition_notebook.py` 通过；
+  - `rg` 检查确认 notebook 中未出现 `rows=20/30/50/100` 等超过 10 行展示参数。
