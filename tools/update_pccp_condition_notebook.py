@@ -272,6 +272,7 @@ def run_condition_classification(key: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         random_state=CONFIG.random_state,
         comparisons={task['classification']: (task['positive_labels'], task['negative_labels'])},
         comparison_feature_order={task['classification']: task['comparison']},
+        feature_order_source='final_ranking',
     )
     result.update({'classification_results': classification_results, 'classification_recommendations': recommendations})
     write_csv(add_feature_meaning_columns(classification_results), _task_path(task, 'classification_test_results.csv'))
@@ -417,6 +418,36 @@ cross_condition_overlap = pd.DataFrame([
 write_csv(cross_condition_overlap, RUN_DIR / 'cross_condition_feature_overlap.csv')
 show_table('7.2 三类工况最终特征Top20重叠对比', cross_condition_overlap, rows=10)
 
+
+def _condition_rank_frame(key: str, prefix: str, top_n: int = 30) -> pd.DataFrame:
+    cols = ['feature', 'condition_rank', 'condition_final_score', 'discrimination_score', 'bootstrap_stability_score', 'redundancy_penalty']
+    out = condition_results[key]['final_ranking'][cols].head(top_n).copy()
+    return out.rename(columns={col: f'{prefix}_{col}' for col in cols if col != 'feature'})
+
+
+cross_condition_rank_matrix = (
+    _condition_rank_frame('v0', 'v0')
+    .merge(_condition_rank_frame('v05', 'v05'), on='feature', how='outer')
+    .merge(_condition_rank_frame('all', 'all'), on='feature', how='outer')
+)
+rank_cols = ['v0_condition_rank', 'v05_condition_rank', 'all_condition_rank']
+score_cols = ['v0_condition_final_score', 'v05_condition_final_score', 'all_condition_final_score']
+cross_condition_rank_matrix['appeared_top30_count'] = cross_condition_rank_matrix[rank_cols].notna().sum(axis=1)
+cross_condition_rank_matrix['mean_rank_top30'] = cross_condition_rank_matrix[rank_cols].mean(axis=1)
+cross_condition_rank_matrix['rank_std_top30'] = cross_condition_rank_matrix[rank_cols].std(axis=1).fillna(0.0)
+cross_condition_rank_matrix['mean_condition_score'] = cross_condition_rank_matrix[score_cols].mean(axis=1)
+cross_condition_rank_matrix['cross_condition_priority'] = (
+    cross_condition_rank_matrix['appeared_top30_count'] * 1000
+    - cross_condition_rank_matrix['mean_rank_top30'].fillna(999)
+    - 0.1 * cross_condition_rank_matrix['rank_std_top30'].fillna(999)
+)
+cross_condition_rank_matrix = cross_condition_rank_matrix.sort_values(
+    ['appeared_top30_count', 'mean_rank_top30', 'rank_std_top30'],
+    ascending=[False, True, True],
+)
+write_csv(add_feature_meaning_columns(cross_condition_rank_matrix), RUN_DIR / 'cross_condition_rank_matrix.csv')
+show_table('7.2 三类工况Top30排名一致性矩阵', cross_condition_rank_matrix, rows=10)
+
 classification_recommendation_summary = pd.concat([
     condition_results['v0']['classification_recommendations'].assign(condition='静水工况（0 m/s）'),
     condition_results['v05']['classification_recommendations'].assign(condition='0.5 m/s工况'),
@@ -444,8 +475,15 @@ condition_final_top = pd.concat([
 write_csv(add_feature_meaning_columns(condition_final_top), RUN_DIR / 'condition_final_top_features.csv')
 show_table('三类工况Top30最终特征汇总', condition_final_top, rows=10)
 
+universal_rank_features = cross_condition_rank_matrix.loc[
+    cross_condition_rank_matrix['appeared_top30_count'].ge(3),
+    'feature',
+].head(12).tolist()
+if not universal_rank_features:
+    universal_rank_features = common_three
+
 recommended_feature_package = pd.DataFrame([
-    {'推荐层级': '跨流速通用优先', '选择依据': '同时出现在4.4、5.4、6.4的Top20中', '特征': '；'.join(common_three), '中文含义': describe_feature_list(common_three)},
+    {'推荐层级': '跨流速通用优先', '选择依据': '同时出现在4.4、5.4、6.4的Top30中，并按平均排名与排名波动优先', '特征': '；'.join(universal_rank_features), '中文含义': describe_feature_list(universal_rank_features)},
     {'推荐层级': '单流速模型补充', '选择依据': '分别参考4.4和5.4中靠前但未共同出现的特征', '特征': '静水：' + _feature_list_text(v0_top20) + '；0.5m/s：' + _feature_list_text(v05_top20), '中文含义': describe_feature_list(list(dict.fromkeys(v0_top20[:12] + v05_top20[:12])))},
     {'推荐层级': '多工况分类候选', '选择依据': '参考6.4最终排序和6.5分类推荐组合', '特征': _feature_list_text(all_top20), '中文含义': describe_feature_list(all_top20[:12])},
 ])
@@ -515,7 +553,8 @@ def expand_static_water_developer_sections(cells: list[dict[str, object]]) -> li
     """把第4节的4.2/4.3/4.5展开为开发者可读的三级小节。"""
 
     def first_line(cell: dict[str, object]) -> str:
-        return "".join(cell.get("source", [])).strip().splitlines()[0]
+        text = "".join(cell.get("source", [])).strip()
+        return text.splitlines()[0] if text else ""
 
     start = next(i for i, cell in enumerate(cells) if first_line(cell).startswith("### 4.2 "))
     end = next(i for i, cell in enumerate(cells) if first_line(cell).startswith("## 05 "))
@@ -798,7 +837,7 @@ show_table('4.5.2 静水工况分类模型与指标', v0_classification_metric_t
             """
 #### 4.5.3 静水工况分类测试结果
 
-本小节运行实际分类测试。特征顺序优先使用 `BK00_NONBK00` 的单特征判别排序；若对应排序缺失，才退回第 4.4 节最终排序。
+本小节运行实际分类测试。特征顺序明确使用第 4.4 节的最终排序，因此分类验证的是“判别力 + 稳定性 + mRMR + 冗余惩罚”共同筛出的特征包，而不是单变量判别分最高的原始列表。
 """
         ),
         code(
@@ -814,6 +853,7 @@ v0_classification_results, v0_classification_recommendations = run_classificatio
     random_state=CONFIG.random_state,
     comparisons={v0_task['classification']: (v0_task['positive_labels'], v0_task['negative_labels'])},
     comparison_feature_order={v0_task['classification']: v0_task['comparison']},
+    feature_order_source='final_ranking',
 )
 v0_result.update({'classification_results': v0_classification_results, 'classification_recommendations': v0_classification_recommendations})
 write_csv(add_feature_meaning_columns(v0_classification_results), _task_path(v0_task, 'classification_test_results.csv'))

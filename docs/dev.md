@@ -1454,3 +1454,18 @@
   - notebook 所有 code cell 通过 `ast.parse` 语法检查；
   - `python -m py_compile tools/update_pccp_condition_notebook.py` 通过；
   - `rg` 检查确认 notebook 中未出现 `rows=20/30/50/100` 等超过 10 行展示参数。
+
+## 2026-09-12（PCCP Notebook 第4-8节专家审查与修正）
+
+- 本次更新范围：`src/pccp_feature_mining/classification_test.py`、`tools/update_pccp_condition_notebook.py`、`notebooks/2026-09-06-PCCP_feature_mining_pipeline.ipynb`、`docs/dev.md`。
+- 发现并修正的问题：
+  - 分类测试口径不严谨：4.5、5.5、6.5 虽然传入了 4.4、5.4、6.4 的最终排序，但底层 `run_classification_tests()` 默认优先使用单特征判别排序，导致分类测试并未严格验证“最终特征选择结论”。现新增 `feature_order_source` 参数，并在 notebook 中显式设置为 `final_ranking`，保证分类测试使用融合判别力、稳定性、mRMR 与冗余惩罚后的最终特征序列。
+  - 第 7 节跨流速一致性只看 Top20 集合重叠，容易漏掉“排名略低但三工况均稳定”的特征。现新增 `cross_condition_rank_matrix.csv`，对 v0、v0.5、多工况 Top30 特征做外连接，输出三类工况排名、得分、出现次数、平均排名与排名标准差。
+  - 第 8 节“跨流速通用优先”推荐逻辑从单纯 Top20 交集改为优先使用 Top30 排名一致性矩阵，按出现次数、平均排名和排名波动筛选通用候选特征。
+  - 生成脚本的 `first_line()` 对空单元不够稳健；现对空文本返回空字符串，避免后续维护时新增空单元导致替换逻辑异常。
+- 自检记录：
+  - `python tools/update_pccp_condition_notebook.py` 成功重建 notebook；
+  - notebook 所有 code cell 通过 `ast.parse` 语法检查；
+  - `python -m py_compile src/pccp_feature_mining/classification_test.py tools/update_pccp_condition_notebook.py` 通过；
+  - 使用小型模拟数据回归测试 `feature_order_source='final_ranking'`，确认分类特征顺序来自最终排序；
+  - `rg` 检查确认 notebook 中未出现 `rows=20/30/50/100` 等超过 10 行展示参数。

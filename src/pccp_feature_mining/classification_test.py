@@ -89,8 +89,17 @@ def _feature_order_for_comparison(
     feature_discrimination: pd.DataFrame,
     final_ranking: pd.DataFrame,
     comparison_feature_order: dict[str, str] | None = None,
+    feature_order_source: str = "discrimination",
 ) -> list[str]:
     """优先使用对应比较任务的单特征分数，缺失时退回最终总排名。"""
+
+    if feature_order_source not in {"discrimination", "final_ranking"}:
+        raise ValueError("feature_order_source must be 'discrimination' or 'final_ranking'")
+    if feature_order_source == "final_ranking":
+        score_col = "final_score" if "final_score" in final_ranking.columns else "condition_final_score"
+        if score_col in final_ranking.columns:
+            return final_ranking.sort_values(score_col, ascending=False)["feature"].tolist()
+        return final_ranking["feature"].tolist() if "feature" in final_ranking.columns else []
 
     mapping = {
         "BK00_vs_NONBK00": "BK00_NONBK00",
@@ -132,6 +141,7 @@ def run_classification_tests(
     random_state: int = 42,
     comparisons: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None,
     comparison_feature_order: dict[str, str] | None = None,
+    feature_order_source: str = "discrimination",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """对五个关键任务做分类验证，并输出推荐特征数量。"""
 
@@ -164,6 +174,7 @@ def run_classification_tests(
             feature_discrimination,
             final_ranking,
             comparison_feature_order=comparison_feature_order,
+            feature_order_source=feature_order_source,
         )
         for k in feature_counts:
             selected = [f for f in ordered_features[:k] if f in frame.columns]
@@ -197,6 +208,7 @@ def run_classification_tests(
                     "f1_positive": float(f1_score(y_test, pred, zero_division=0)),
                     "recall_positive": float(tp / (tp + fn)) if tp + fn else 0.0,
                     "specificity": float(tn / (tn + fp)) if tn + fp else 0.0,
+                    "feature_order_source": feature_order_source,
                     "selected_features": ";".join(selected),
                 }
                 rows.append(row)
@@ -221,6 +233,7 @@ def run_classification_tests(
                 "auc": float(best["auc"]),
                 "recall_positive": float(best["recall_positive"]),
                 "specificity": float(best["specificity"]),
+                "feature_order_source": best["feature_order_source"],
                 "recommended_features": best["selected_features"],
                 "split_note": "按source_file_name分组，且在每个来源标签内划分训练/测试；训练集多数类最多采样到max_train_rows_per_class。",
             }
