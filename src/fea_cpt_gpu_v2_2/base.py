@@ -54,6 +54,7 @@ class FeatureParams:
     - `ridge_valid_energy_ratio`: ridge frame validity gate: valid iff frame band energy >
       this ratio times the window's median frame energy. Default 0.2.
     - `ridge_fixed_band_hz`: fixed half-bandwidth (Hz) around ridges for `R_h`. Default 1000.
+    - `ridge_slope_threshold_hz_per_s`: independent Hz/s threshold for `rho_up/down`.
     - `bulge_threshold_ratio`, `bulge_min_distance_ms`: bulge counting parameters.
     - `residual_abnormal_threshold`: threshold for abnormal frame counting.
     - `local_window_ms`, `asymmetry_window_ms`: local statistics window controls.
@@ -85,6 +86,7 @@ class FeatureParams:
     ridge_relative_bandwidth: float = 0.08
     ridge_valid_energy_ratio: float = 0.2
     ridge_fixed_band_hz: float = 1_000.0
+    ridge_slope_threshold_hz_per_s: float = 2_000_000.0
     bulge_threshold_ratio: float = 0.6
     bulge_min_distance_ms: float = 0.2
     residual_abnormal_threshold: float = 0.55

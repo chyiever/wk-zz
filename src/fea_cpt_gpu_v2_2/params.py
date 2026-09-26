@@ -109,6 +109,11 @@ RIDGE_VALID_ENERGY_RATIO = 0.2
 # the relative-bandwidth R_2_1. Default: 1000 Hz. Recommended range: 500-2000 Hz.
 RIDGE_FIXED_BAND_HZ = 1_000.0
 
+# Feature names: rho_up, rho_down.
+# This is deliberately separate from RIDGE_JUMP_PENALTY_HZ: ridge slopes are measured in Hz/s,
+# whereas the dynamic-programming transition penalty is a frequency distance in Hz.
+RIDGE_SLOPE_THRESHOLD_HZ_PER_S = 2_000_000.0
+
 # Background SNR/excess energy are descriptive statistics only; no binary
 # observability gate is applied because real backgrounds are non-stationary.
 
@@ -193,6 +198,7 @@ DEFAULT_FEATURE_PARAMS = FeatureParams(
     ridge_relative_bandwidth=RIDGE_RELATIVE_BANDWIDTH,
     ridge_valid_energy_ratio=RIDGE_VALID_ENERGY_RATIO,
     ridge_fixed_band_hz=RIDGE_FIXED_BAND_HZ,
+    ridge_slope_threshold_hz_per_s=RIDGE_SLOPE_THRESHOLD_HZ_PER_S,
     bulge_threshold_ratio=BULGE_THRESHOLD_RATIO,
     bulge_min_distance_ms=BULGE_MIN_DISTANCE_MS,
     residual_abnormal_threshold=RESIDUAL_ABNORMAL_THRESHOLD,

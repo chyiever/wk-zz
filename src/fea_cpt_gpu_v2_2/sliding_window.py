@@ -18,6 +18,7 @@ import os
 import random
 import re
 import sys
+import threading
 import time
 from itertools import product
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -90,9 +91,10 @@ def build_feature_request_map(
     return requests, harmonic_band_name
 
 
-FEATURE_SCHEMA_VERSION = "pccp-v6-band100k-no-snr-gate-wpt-auto-20260910"
+FEATURE_SCHEMA_VERSION = "pccp-v7-bandaware-spectral-harmonic-multires-20260911"
 ALLOWED_NAN_BASE_FEATURES = frozenset({
-    "T_half_high", "alpha_hat", "beta_H",
+    "T_half_high", "alpha_hat", "beta_H", "H2_ratio", "R_2_1", "R_h",
+    "epsilon_2x", "C_h",
 })
 
 
@@ -241,6 +243,46 @@ def _attach_shared(info: dict) -> tuple[dict[str, np.ndarray], SharedMemory]:
 # ---------------------------------------------------------------------------
 
 _worker_shm_cache: dict[str, tuple[dict[str, np.ndarray], SharedMemory]] = {}
+
+
+def _start_parent_watchdog() -> None:
+    """Kill this worker if the parent pipeline process dies.
+
+    Interrupting or killing a Jupyter kernel does not always deliver EOF to the
+    executor's call queue on Windows, so workers can linger forever holding
+    gigabytes of committed memory (observed: 14 orphans x ~2 GB).  Polling the
+    parent pid bounds that leak to one polling interval.
+    """
+    if psutil is None:
+        return
+    parent_pid = os.getppid()
+    if parent_pid <= 0:
+        return
+
+    def _watch() -> None:
+        while True:
+            time.sleep(30.0)
+            try:
+                parent = psutil.Process(parent_pid)
+                if parent.is_running() and parent.status() != psutil.STATUS_ZOMBIE:
+                    continue
+            except psutil.NoSuchProcess:
+                pass
+            except Exception:
+                continue
+            os._exit(0)
+
+    threading.Thread(target=_watch, daemon=True, name='fea-parent-watchdog').start()
+
+
+def _initialize_feature_worker() -> None:
+    """Keep spawned workers CPU-only; the parent owns centralized CUDA work."""
+    os.environ['FEA_CPT_USE_GPU'] = '0'
+    # Process-level parallelism already saturates the cores; per-worker OpenMP/MKL
+    # thread pools only oversubscribe (14 workers x 16 threads on 16 logical cores).
+    os.environ.setdefault('OMP_NUM_THREADS', '1')
+    os.environ.setdefault('MKL_NUM_THREADS', '1')
+    _start_parent_watchdog()
 
 
 def _worker_get_arrays(shm_info: dict) -> tuple[dict[str, np.ndarray], SharedMemory]:
@@ -511,7 +553,8 @@ def _safe_band(low: float, high: float, nyq: float) -> tuple[float, float]:
 
 
 def build_params_for_band(band: tuple[float, float], sample_rate: float) -> Any:
-    low, high = band
+    requested_low, requested_high = band
+    low, high = requested_low, requested_high
     nyq = sample_rate / 2.0
     low, high = _safe_band(low, high, nyq)
     span = max(high - low, 10.0)
@@ -520,10 +563,28 @@ def build_params_for_band(band: tuple[float, float], sample_rate: float) -> Any:
     high1_band = _safe_band(low + 0.50 * span, low + 0.80 * span, nyq)
     high2_band = _safe_band(low + 0.60 * span, high, nyq)
     harmonic_band = _safe_band(low + 0.50 * span, high, nyq)
-    # Observable harmonic contract for the known 100 Hz-60 kHz PCCP range: f1 is meaningful up
-    # to 30 kHz and f2 is searched in the same full context up to 60 kHz.
-    ridge_main = _safe_band(low, min(low + 0.65 * span, 50_000.0, high), nyq)
-    ridge_h2 = _safe_band(max(100.0, low * 2.0), min(high, 100_000.0, nyq * 0.995), nyq)
+    is_full_harmonic_context = requested_low <= 100.0 and requested_high >= 60_000.0
+    if is_full_harmonic_context:
+        # The harmonic contract needs enough distance from DC for a symmetric ridge neighbourhood,
+        # and f1 must remain <= 50 kHz so that 2*f1 is observable below 100 kHz.
+        ridge_main = _safe_band(5_000.0, min(50_000.0, high / 2.0), nyq)
+        ridge_h2 = _safe_band(10_000.0, 100_000.0, nyq)
+        stft_window_ms, stft_nfft = 2.048, 2048
+        short_window_ms, short_nfft = 0.32, 512
+    else:
+        # Non-harmonic residual bands remove their own dominant local ridge.  Do not apply the
+        # harmonic-context 50 kHz cap, which previously made 60-100 kHz residuals equal the input.
+        ridge_main = _safe_band(low, low + 0.65 * span, nyq)
+        ridge_h2 = _safe_band(max(low, low + 0.20 * span), high, nyq)
+        if high <= 5_000.0:
+            stft_window_ms, stft_nfft = 8.192, 8192
+            short_window_ms, short_nfft = 4.096, 4096
+        elif high <= 15_000.0:
+            stft_window_ms, stft_nfft = 4.096, 4096
+            short_window_ms, short_nfft = 2.048, 2048
+        else:
+            stft_window_ms, stft_nfft = 0.64, 1024
+            short_window_ms, short_nfft = 0.32, 512
     effective_rate = min(float(sample_rate), max(4_000.0, 3.0 * high))
     wpt_level = infer_wavelet_level(effective_rate)
     return replace(
@@ -539,6 +600,10 @@ def build_params_for_band(band: tuple[float, float], sample_rate: float) -> Any:
         harmonic_band_hz=harmonic_band,
         ridge_main_search_hz=ridge_main,
         ridge_h2_search_hz=ridge_h2,
+        stft_window_ms=stft_window_ms,
+        stft_nfft=stft_nfft,
+        short_stft_window_ms=short_window_ms,
+        short_stft_nfft=short_nfft,
         wavelet_level=wpt_level,
         n_jobs=1,
     )
@@ -642,13 +707,24 @@ def compute_all_features_for_window(
                 ridge_f2, ridge_idx_f2 = _dynamic_programming_ridge(
                     s['stft_freqs'], s['stft_power'],
                     params.ridge_h2_search_hz, params.ridge_jump_penalty_hz,
-                    prior_hz=2.0 * ridge_f1 if ridge_f1.size else None,
                 )
             else:
                 ridge_f2 = np.zeros_like(ridge_f1)
                 ridge_idx_f2 = np.zeros_like(ridge_idx_f1)
 
-            ridge_mask_full = build_ridge_mask(s['stft_freqs'], ridge_f1, ridge_f2, params.ridge_relative_bandwidth)
+            frame_energy = np.sum(s['stft_power'], axis=0, dtype=np.float64)
+            active_frames = (ridge_f1 > 0.0) & (
+                frame_energy > params.ridge_valid_energy_ratio * float(np.median(frame_energy))
+            )
+            bin_hz = s['stft_freqs'][1] - s['stft_freqs'][0] if len(s['stft_freqs']) > 1 else 1.0
+            harmonic_tolerance = np.maximum(
+                bin_hz, params.ridge_relative_bandwidth * np.maximum(ridge_f1, params.eps),
+            )
+            harmonic_frames = active_frames & (np.abs(ridge_f2 - 2.0 * ridge_f1) < harmonic_tolerance)
+            ridge_mask_full = build_ridge_mask(
+                s['stft_freqs'], ridge_f1, ridge_f2, params.ridge_relative_bandwidth,
+                active_frames=active_frames, harmonic_frames=harmonic_frames,
+            )
             harmonic_complex = s['stft_complex'] * ridge_mask_full
             residual_complex = s['stft_complex'] * (1.0 - ridge_mask_full)
             total_energy_tf = float(np.sum(s['stft_power'], dtype=np.float64))
@@ -766,13 +842,6 @@ def _worker_process_window(
         if enable_shared_stft and stft_shm_info is not None:
             # 从共享内存读取 STFT 结果
             stft_arrays, _ = _worker_get_arrays(stft_shm_info)
-            stft_freqs = stft_arrays['stft_freqs']
-            stft_times = stft_arrays['stft_times']
-            stft_complex_win = stft_arrays['stft_complex'][:, stft_chunk_idx]
-            stft_power_win = stft_arrays['stft_power'][:, stft_chunk_idx]
-            short_freqs = stft_arrays['short_freqs']
-            short_times = stft_arrays['short_times']
-            short_power_win = stft_arrays['short_power'][:, stft_chunk_idx]
             main_signals_win = stft_arrays['main_signals'][:, stft_chunk_idx]
             preprocessed_win = stft_arrays['preprocessed_signals'][stft_chunk_idx]
             backend = 'torch_cpu' if int(stft_arrays['stft_backend_code'][0]) == 1 else 'scipy'
@@ -784,13 +853,13 @@ def _worker_process_window(
                     'main_signal': main_signals_win[band_index],
                     'preprocessed_signal': preprocessed_win,
                     'stft_backend': backend,
-                    'stft_freqs': stft_freqs,
-                    'stft_times': stft_times,
-                    'stft_complex': stft_complex_win[band_index],
-                    'stft_power': stft_power_win[band_index],
-                    'short_freqs': short_freqs,
-                    'short_times': short_times,
-                    'short_power': short_power_win[band_index],
+                    'stft_freqs': stft_arrays[f'stft_freqs_{band_index}'],
+                    'stft_times': stft_arrays[f'stft_times_{band_index}'],
+                    'stft_complex': stft_arrays[f'stft_complex_{band_index}'][stft_chunk_idx],
+                    'stft_power': stft_arrays[f'stft_power_{band_index}'][stft_chunk_idx],
+                    'short_freqs': stft_arrays[f'short_freqs_{band_index}'],
+                    'short_times': stft_arrays[f'short_times_{band_index}'],
+                    'short_power': stft_arrays[f'short_power_{band_index}'][stft_chunk_idx],
                 }
 
             fvals = compute_all_features_for_window(
@@ -950,50 +1019,61 @@ def _compute_one_stft_chunk(
             band_window = np.asarray(band_signals[band_name][i0:i1], dtype=np.float64)
             main_signals[band_index, row_idx] = band_window / scale if params_map[band_name].normalize_robust else band_window
 
-    # All current bands share one STFT configuration.  Flatten (band, window) for one batched GPU
-    # call, then restore the two axes.  This shares execution without sharing a mathematically
-    # different wide-band spectrum.
-    flat_signals = main_signals.reshape(n_bands * n_windows, win_len)
-
-    stft_freqs, stft_times, stft_complex, stft_power = compute_stft_power(
-        flat_signals,
-        sample_rate,
-        reference_params.stft_window_ms,
-        reference_params.stft_overlap,
-        reference_params.stft_nfft,
-        batched=True,
-    )
-    short_freqs, short_times, _, short_power = compute_stft_power(
-        flat_signals,
-        sample_rate,
-        reference_params.short_stft_window_ms,
-        reference_params.short_stft_overlap,
-        reference_params.short_stft_nfft,
-        batched=True,
-    )
-    stft_complex = np.asarray(stft_complex).reshape(n_bands, n_windows, stft_complex.shape[-2], stft_complex.shape[-1])
-    stft_power = np.asarray(stft_power, dtype=np.float64).reshape(n_bands, n_windows, stft_power.shape[-2], stft_power.shape[-1])
-    short_power = np.asarray(short_power, dtype=np.float64).reshape(n_bands, n_windows, short_power.shape[-2], short_power.shape[-1])
+    # Bands with the same resolution share one GPU batch.  Different resolution groups retain
+    # their own frequency/time axes, which is required for low-frequency multi-resolution STFT.
+    config_groups: dict[tuple[float, float, int | None, float, float, int | None], list[int]] = {}
     for band_index, band_name in enumerate(band_names):
         params = params_map[band_name]
-        mask = (stft_freqs >= params.main_band_hz[0]) & (stft_freqs <= params.main_band_hz[1])
-        short_mask = (short_freqs >= params.main_band_hz[0]) & (short_freqs <= params.main_band_hz[1])
-        stft_complex[band_index, :, ~mask, :] = 0.0
-        stft_power[band_index, :, ~mask, :] = 0.0
-        short_power[band_index, :, ~short_mask, :] = 0.0
+        key = (
+            params.stft_window_ms, params.stft_overlap, params.stft_nfft,
+            params.short_stft_window_ms, params.short_stft_overlap, params.short_stft_nfft,
+        )
+        config_groups.setdefault(key, []).append(band_index)
 
-    pack = _SharedArrayPack({
-        'stft_freqs': stft_freqs.astype(np.float64),
-        'stft_times': stft_times.astype(np.float64),
-        'stft_complex': stft_complex,
-        'stft_power': stft_power,
-        'short_freqs': short_freqs.astype(np.float64),
-        'short_times': short_times.astype(np.float64),
-        'short_power': short_power,
+    packed_arrays: dict[str, np.ndarray] = {
         'main_signals': main_signals,
         'preprocessed_signals': preprocessed_signals,
         'stft_backend_code': np.asarray([1 if active_stft_backend() == 'torch' else 0], dtype=np.int8),
-    })
+    }
+    for key, band_indices in config_groups.items():
+        stft_window_ms, stft_overlap, stft_nfft, short_window_ms, short_overlap, short_nfft = key
+        group_signals = main_signals[band_indices].reshape(len(band_indices) * n_windows, win_len)
+        freqs, times, complex_spec, power = compute_stft_power(
+            group_signals, sample_rate, stft_window_ms, stft_overlap, stft_nfft,
+            batched=True,
+        )
+        short_freqs, short_times, _, short_power = compute_stft_power(
+            group_signals, sample_rate, short_window_ms, short_overlap, short_nfft,
+            batched=True,
+        )
+        complex_spec = np.asarray(complex_spec).reshape(
+            len(band_indices), n_windows, complex_spec.shape[-2], complex_spec.shape[-1],
+        )
+        power = np.asarray(power, dtype=np.float64).reshape(
+            len(band_indices), n_windows, power.shape[-2], power.shape[-1],
+        )
+        short_power = np.asarray(short_power, dtype=np.float64).reshape(
+            len(band_indices), n_windows, short_power.shape[-2], short_power.shape[-1],
+        )
+        for group_index, band_index in enumerate(band_indices):
+            params = params_map[band_names[band_index]]
+            mask = (freqs >= params.main_band_hz[0]) & (freqs <= params.main_band_hz[1])
+            short_mask = (short_freqs >= params.main_band_hz[0]) & (short_freqs <= params.main_band_hz[1])
+            band_complex = complex_spec[group_index].copy()
+            band_power = power[group_index].copy()
+            band_short_power = short_power[group_index].copy()
+            band_complex[:, ~mask, :] = 0.0
+            band_power[:, ~mask, :] = 0.0
+            band_short_power[:, ~short_mask, :] = 0.0
+            packed_arrays[f'stft_freqs_{band_index}'] = np.asarray(freqs, dtype=np.float64)
+            packed_arrays[f'stft_times_{band_index}'] = np.asarray(times, dtype=np.float64)
+            packed_arrays[f'stft_complex_{band_index}'] = band_complex
+            packed_arrays[f'stft_power_{band_index}'] = band_power
+            packed_arrays[f'short_freqs_{band_index}'] = np.asarray(short_freqs, dtype=np.float64)
+            packed_arrays[f'short_times_{band_index}'] = np.asarray(short_times, dtype=np.float64)
+            packed_arrays[f'short_power_{band_index}'] = band_short_power
+
+    pack = _SharedArrayPack(packed_arrays)
     logging.getLogger('fea_cpt_gpu_v2_2').debug(
         'perf stage=gpu_stft_chunk windows=%d bands=%d elapsed_ms=%.3f',
         n_windows, n_bands, (time.perf_counter() - perf_start) * 1000.0,
@@ -1017,6 +1097,8 @@ def _is_recoverable_stft_memory_error(exc: BaseException) -> bool:
     text = str(exc).lower()
     return (
         'out of memory' in text
+        or 'unable to allocate' in text
+        or 'memoryerror' in text
         or ('cuda' in text and 'memory' in text)
         or 'winerror 1455' in text
         or 'page file' in text
@@ -1058,11 +1140,15 @@ def _iter_adaptive_stft_chunks(
                 chunk_start,
                 chunk_end,
             )
-        except (RuntimeError, OSError) as exc:
+        except (RuntimeError, OSError, MemoryError) as exc:
             if batch_size <= min_batch_size or not _is_recoverable_stft_memory_error(exc):
                 raise
             batch_size = max(min_batch_size, batch_size // 2)
             _clear_transient_memory()
+            logging.getLogger('fea_cpt_gpu_v2_2').warning(
+                'STFT chunk memory pressure (batch %d -> %d): %s',
+                batch_size * 2, batch_size, exc,
+            )
             continue
         yield pack, chunk_start, chunk_end
         chunk_start = chunk_end
@@ -1090,6 +1176,7 @@ class SlidingWindowConfig:
     enable_shared_stft: bool = True
     stft_batch_size: int = 200
     worker_window_batch: int = 4
+    enable_file_preload: bool = True
     feature_families_by_band: dict[str, tuple[str, ...]] | None = None
     harmonic_band_name: str | None = None
 
@@ -1209,7 +1296,9 @@ def process_source_file(
                 stft_batch_size=config.stft_batch_size,
             )
 
-            with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            with ProcessPoolExecutor(
+                max_workers=max_workers, initializer=_initialize_feature_worker,
+            ) as ex:
                 for stft_pack, chunk_start, chunk_end in stft_chunks:
                     try:
                         futures = []
@@ -1233,7 +1322,9 @@ def process_source_file(
                     finally:
                         stft_pack.cleanup()
         else:
-            with ProcessPoolExecutor(max_workers=max_workers) as ex:
+            with ProcessPoolExecutor(
+                max_workers=max_workers, initializer=_initialize_feature_worker,
+            ) as ex:
                 futures = []
                 for b0 in range(0, len(windows), config.window_batch_size):
                     chunk = windows[b0:b0 + config.window_batch_size]
@@ -1401,9 +1492,15 @@ def build_sliding_window_dataset(
     logger = logging.getLogger('fea_cpt_gpu_v2_2')
 
     # v2.2 核心：持久化进程池
-    executor = ProcessPoolExecutor(max_workers=max_workers)
-    # v2.2 核心：预加载线程池（文件级流水线）
-    preload_executor = ThreadPoolExecutor(max_workers=1)
+    executor = ProcessPoolExecutor(
+        max_workers=max_workers, initializer=_initialize_feature_worker,
+    )
+    # A 1 MHz file approaches 1 GB after all canonical bands are constructed.
+    # Callers can disable look-ahead so the next file is not resident together
+    # with the current file and its shared-memory copy.
+    preload_executor = (
+        ThreadPoolExecutor(max_workers=1) if config.enable_file_preload else None
+    )
 
     try:
         # 预加载第一个需要处理的文件
@@ -1414,7 +1511,7 @@ def build_sliding_window_dataset(
                 break
 
         next_file_future = None
-        if first_unprocessed is not None:
+        if first_unprocessed is not None and preload_executor is not None:
             next_file_future = preload_executor.submit(_preload_file, first_unprocessed, config)
 
         pbar = tqdm(
@@ -1457,7 +1554,7 @@ def build_sliding_window_dataset(
                     break
                 if candidate == fp:
                     found_current = True
-            if next_fp is not None:
+            if next_fp is not None and preload_executor is not None:
                 next_file_future = preload_executor.submit(_preload_file, next_fp, config)
 
             if file_data is None:
@@ -1613,8 +1710,11 @@ def build_sliding_window_dataset(
             _update_progress_bar(pbar)
 
     finally:
-        executor.shutdown(wait=True)
-        preload_executor.shutdown(wait=True)
+        # cancel_futures keeps Ctrl-C responsive: queued window batches are dropped
+        # instead of running to completion after the user interrupts the run.
+        executor.shutdown(wait=True, cancel_futures=True)
+        if preload_executor is not None:
+            preload_executor.shutdown(wait=True)
 
     return stats
 

@@ -33,7 +33,7 @@ FEATURE_FAMILIES: dict[str, frozenset[str]] = {
         "crest_factor", "impulse_factor", "clearance_factor",
     }),
     "time": frozenset({
-        "r_p", "C_E", "S_env", "Sk_env", "R_td", "R_fb", "C_bulge",
+        "r_p", "C_E", "A_env", "S_env", "Sk_env", "R_td", "R_fb", "C_bulge",
         "N_bulge", "epsilon_env", "eta_bw", "R_tkeo", "K_loc",
     }),
     "spectral": frozenset({
@@ -385,7 +385,10 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     eta_den = (peak_idx - low_idx) + 1
     features["eta_bw"] = float(eta_num / max(1, eta_den))
 
-    sc = _spectral_centroid(context.stft_freqs, context.stft_power, eps)
+    analysis_mask = _band_mask(context.stft_freqs, params.main_band_hz)
+    analysis_freqs = context.stft_freqs[analysis_mask]
+    analysis_power = context.stft_power[analysis_mask, :]
+    sc = _spectral_centroid(analysis_freqs, analysis_power, eps)
     low_energy = _framewise_energy(context.stft_power, _band_mask(context.stft_freqs, params.low_band_hz))
     high_energy = _framewise_energy(context.stft_power, _band_mask(context.stft_freqs, params.high2_band_hz))
     features["SC_mean"] = float(np.mean(sc)) if sc.size else 0.0
@@ -399,23 +402,23 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     if high_energy.size and np.sum(post_mask) >= 2:
         features["beta_H"] = _line_slope(context.stft_times[post_mask], np.log(high_energy[post_mask] + eps))
     else:
-        features["beta_H"] = _line_slope(context.stft_times, np.log(high_energy + eps)) if high_energy.size else 0.0
+        features["beta_H"] = float("nan")
 
-    total_power = float(np.sum(context.stft_power, dtype=np.float64))
-    prob_tf = np.asarray(context.stft_power, dtype=np.float64) / (total_power + eps)
+    total_power = float(np.sum(analysis_power, dtype=np.float64))
+    prob_tf = np.asarray(analysis_power, dtype=np.float64) / (total_power + eps)
     features["H_tf"] = float(-np.sum(prob_tf * np.log(prob_tf + eps)))
-    power_spectrum = np.mean(context.stft_power, axis=1) if context.stft_power.size else np.zeros(0)
+    power_spectrum = np.mean(analysis_power, axis=1) if analysis_power.size else np.zeros(0)
     features["SF"] = float(np.exp(np.mean(np.log(power_spectrum + eps))) / (np.mean(power_spectrum) + eps)) if power_spectrum.size else 0.0
     features["H_alpha"] = _renyi_entropy(prob_tf, params.renyi_alpha, eps) if prob_tf.size else 0.0
     mean_power = np.zeros(0, dtype=np.float64)
-    if context.stft_power.size:
-        mean_power = np.mean(np.asarray(context.stft_power, dtype=np.float64), axis=1)
+    if analysis_power.size:
+        mean_power = np.mean(np.asarray(analysis_power, dtype=np.float64), axis=1)
         global_centroid = float(
-            np.sum(context.stft_freqs[:, None] * context.stft_power, dtype=np.float64)
-            / (np.sum(context.stft_power, dtype=np.float64) + eps)
+            np.sum(analysis_freqs[:, None] * analysis_power, dtype=np.float64)
+            / (np.sum(analysis_power, dtype=np.float64) + eps)
         )
-        spread_num = np.sum(((context.stft_freqs - global_centroid)[:, None] ** 2) * context.stft_power, dtype=np.float64)
-        spread_den = np.sum(context.stft_power, dtype=np.float64)
+        spread_num = np.sum(((analysis_freqs - global_centroid)[:, None] ** 2) * analysis_power, dtype=np.float64)
+        spread_den = np.sum(analysis_power, dtype=np.float64)
         features["spectral_spread"] = float(np.sqrt(max(spread_num / (spread_den + eps), 0.0)))
     else:
         features["spectral_spread"] = 0.0
@@ -478,23 +481,31 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
         features["S_arch"] = 0.0
 
     diff_h2 = np.abs(context.ridge_f2 - 2.0 * context.ridge_f1)
-    tol = np.maximum(2.0 * bin_hz, params.ridge_relative_bandwidth * np.maximum(context.ridge_f1, eps))
+    # Matching uses a one-bin numerical floor.  The former two-bin floor at a 100 Hz lower
+    # boundary accepted ~100% relative errors as "2:1" when f1 occupied the first FFT bin.
+    tol = np.maximum(bin_hz, params.ridge_relative_bandwidth * np.maximum(context.ridge_f1, eps))
     harmonic_match = diff_h2 < tol
-    features["H2_ratio"] = float(np.mean(harmonic_match[active])) if np.any(active) else 0.0
+    features["H2_ratio"] = float(np.mean(harmonic_match[active])) if np.any(active) else float("nan")
 
     # R_2_1：f1/f2 脊线 ±相对带宽 带内能量积分
     if len(context.ridge_f1) and context.stft_power.size:
         rel_hw1 = np.maximum(2.0 * bin_hz, params.ridge_relative_bandwidth * np.maximum(context.ridge_f1, 0.0))
         rel_hw2 = np.maximum(2.0 * bin_hz, params.ridge_relative_bandwidth * np.maximum(context.ridge_f2, 0.0))
-        e1 = _ridge_band_energy(context.stft_power, context.stft_freqs, context.ridge_f1, rel_hw1)
+        e1_per_frame = _ridge_band_energy_per_frame(
+            context.stft_power, context.stft_freqs, context.ridge_f1, rel_hw1,
+            skip_clipped=False,
+        )
         e2_per_frame = _ridge_band_energy_per_frame(
             context.stft_power, context.stft_freqs, context.ridge_f2, rel_hw2,
+            skip_clipped=False,
         )
-        e2 = float(np.sum(e2_per_frame, dtype=np.float64))
+        e1 = float(np.sum(e1_per_frame[active], dtype=np.float64))
+        e2 = float(np.sum(e2_per_frame[active & harmonic_match], dtype=np.float64))
     else:
         e1, e2 = 0.0, 0.0
+        e1_per_frame = np.zeros_like(frame_energy, dtype=np.float64)
         e2_per_frame = np.zeros_like(frame_energy, dtype=np.float64)
-    features["R_2_1"] = float(e2 / (e1 + eps))
+    features["R_2_1"] = float(e2 / (e1 + eps)) if e1 > eps else float("nan")
     h2_bg = float(np.mean(e2_per_frame[background_frames])) if e2_per_frame.size and np.any(background_frames) else 0.0
     h2_event = float(np.mean(e2_per_frame[event_frames])) if e2_per_frame.size and np.any(event_frames) else 0.0
 
@@ -508,7 +519,7 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
             target = multiplier * context.ridge_f1
             hw = np.maximum(2.0 * bin_hz, params.ridge_relative_bandwidth * np.maximum(target, 0.0))
             for frame_index, target_hz in enumerate(target):
-                if target_hz > 0.0:
+                if active[frame_index] and target_hz > 0.0:
                     stack_mask[:, frame_index] |= np.abs(context.stft_freqs - target_hz) <= hw[frame_index]
         harmonic_stack = float(np.sum(context.stft_power[stack_mask], dtype=np.float64))
     features["H_stack"] = float(harmonic_stack / (context.total_energy_tf + eps))
@@ -516,14 +527,22 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     # R_h：f1/f2 脊线固定 ±1 kHz 邻域带积分，与 R_2_1（相对带宽）互补
     if len(context.ridge_f1) and context.stft_power.size:
         fixed_hw = params.ridge_fixed_band_hz
-        eh1 = _ridge_band_energy(context.stft_power, context.stft_freqs, context.ridge_f1, fixed_hw)
-        eh2 = _ridge_band_energy(context.stft_power, context.stft_freqs, context.ridge_f2, fixed_hw)
+        eh1_frame = _ridge_band_energy_per_frame(
+            context.stft_power, context.stft_freqs, context.ridge_f1, fixed_hw,
+            skip_clipped=False,
+        )
+        eh2_frame = _ridge_band_energy_per_frame(
+            context.stft_power, context.stft_freqs, context.ridge_f2, fixed_hw,
+            skip_clipped=False,
+        )
+        eh1 = float(np.sum(eh1_frame[active], dtype=np.float64))
+        eh2 = float(np.sum(eh2_frame[active & harmonic_match], dtype=np.float64))
     else:
         eh1, eh2 = 0.0, 0.0
-    features["R_h"] = float(eh2 / (eh1 + eps))
+    features["R_h"] = float(eh2 / (eh1 + eps)) if eh1 > eps else float("nan")
 
-    features["epsilon_2x"] = float(np.median(diff_h2[active] / (context.ridge_f1[active] + eps))) if np.any(active) else 0.0
-    features["C_h"] = float(np.mean(diff_h2[active])) if np.any(active) else 0.0
+    features["epsilon_2x"] = float(np.median(diff_h2[active] / (context.ridge_f1[active] + eps))) if np.any(active) else float("nan")
+    features["C_h"] = float(np.mean(diff_h2[active])) if np.any(active) else float("nan")
     features["R_harm"] = float(context.harmonic_energy / (context.total_energy_tf + eps))
     features["Ridge_coh"] = features["R_harm"]  # 兼容别名列：与 R_harm 同值，已停用（不参与模型选择）
 
@@ -538,7 +557,7 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
         slopes = slopes[np.isfinite(slopes)]
     else:
         slopes = np.zeros(0, dtype=float)
-    slope_threshold = params.ridge_jump_penalty_hz
+    slope_threshold = params.ridge_slope_threshold_hz_per_s
     features["rho_up"] = float(np.mean(slopes > slope_threshold)) if slopes.size else 0.0
     features["rho_down"] = float(np.mean(slopes < -slope_threshold)) if slopes.size else 0.0
     nonzero_slopes = slopes[slopes != 0.0]
@@ -580,7 +599,9 @@ def compute_all_features(context: FeatureContext) -> FeatureResult:
     window = max(8, int(round(fs * params.local_window_ms / 1_000.0)))
     features["K_loc"] = float(stats.kurtosis(signal_values, fisher=False, bias=False)) if len(signal_values) >= 4 else 0.0
     features["K_res_max"] = _local_kurtosis_max(residual, window)
-    sk = _spectral_kurtosis(context.short_power, eps) if context.short_power.size else np.zeros(0)
+    short_analysis_mask = _band_mask(context.short_freqs, params.main_band_hz)
+    short_analysis_power = context.short_power[short_analysis_mask, :]
+    sk = _spectral_kurtosis(short_analysis_power, eps) if short_analysis_power.size else np.zeros(0)
     features["SK_max"] = float(np.max(sk)) if sk.size else 0.0
     features["CF_res"] = _crest_factor(residual, eps)
 

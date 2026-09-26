@@ -50,10 +50,8 @@ def _init_gpu_stft():
 
 def active_stft_backend() -> str:
     """Return the backend used by :func:`compute_stft_power`."""
+    _init_gpu_stft()
     return "torch" if _torch_available else "scipy"
-
-
-_init_gpu_stft()
 
 
 def safe_divide(numerator: float | np.ndarray, denominator: float | np.ndarray, eps: float) -> float | np.ndarray:
@@ -217,6 +215,7 @@ def compute_stft_power(values: np.ndarray, sample_rate: float, window_ms: float,
 
     v2: 优先使用 GPU (torch.stft)，回退到 scipy。
     """
+    _init_gpu_stft()
     if _torch_available:
         return _stft_gpu(values, sample_rate, window_ms, overlap, nfft, batched=batched)
     # Fallback: scipy CPU path
@@ -269,14 +268,27 @@ def _dynamic_programming_ridge(freqs: np.ndarray, power: np.ndarray, search_hz: 
     return freqs[ridge_global], ridge_global
 
 
-def build_ridge_mask(freqs: np.ndarray, ridge_f1: np.ndarray, ridge_f2: np.ndarray, relative_bandwidth: float) -> np.ndarray:
+def build_ridge_mask(
+    freqs: np.ndarray,
+    ridge_f1: np.ndarray,
+    ridge_f2: np.ndarray,
+    relative_bandwidth: float,
+    *,
+    active_frames: np.ndarray | None = None,
+    harmonic_frames: np.ndarray | None = None,
+) -> np.ndarray:
     """Build harmonic mask around primary and second-harmonic ridges."""
     mask = np.zeros((len(freqs), len(ridge_f1)), dtype=np.float32)
     if len(freqs) == 0:
         return mask
     bin_hz = freqs[1] - freqs[0] if len(freqs) > 1 else 1.0
     for t in range(len(ridge_f1)):
-        for freq in (ridge_f1[t], ridge_f2[t]):
+        if active_frames is not None and not bool(active_frames[t]):
+            continue
+        frame_freqs = [ridge_f1[t]]
+        if harmonic_frames is None or bool(harmonic_frames[t]):
+            frame_freqs.append(ridge_f2[t])
+        for freq in frame_freqs:
             if freq <= 0.0:
                 continue
             bandwidth = max(2.0 * bin_hz, relative_bandwidth * freq)
@@ -295,12 +307,23 @@ def inverse_stft(
     length: int | None = None,
 ) -> np.ndarray:
     """Invert an STFT with the same library and conventions used by the forward transform."""
+    global _torch, _device
     nperseg = max(16, int(round(sample_rate * window_ms / 1_000.0)))
     noverlap = min(nperseg - 1, int(round(nperseg * overlap)))
     nfft = max(nperseg, 2 * (complex_spec.shape[-2] - 1))
     hop_length = nperseg - noverlap
 
     if backend in {"torch", "torch_cpu"}:
+        if _torch is None and backend == "torch_cpu":
+            # Spawned feature workers deliberately disable CUDA.  They still
+            # need Torch CPU for an exactly paired inverse of the parent's
+            # Torch STFT, so import it here without probing torch.cuda.
+            try:
+                import torch as torch_module
+            except ImportError:
+                torch_module = None
+            _torch = torch_module
+            _device = torch_module.device('cpu') if torch_module is not None else None
         if _torch is None:
             raise RuntimeError("Torch STFT cannot be inverted because torch is unavailable")
         # GPU work is centralised in the producer.  Multiprocessing workers use Torch on CPU for
@@ -434,8 +457,22 @@ def build_context(record: FeatureRecord, params: FeatureParams) -> FeatureContex
     short_freqs, short_times, _, short_power = compute_stft_power(main_signal, record.sample_rate, params.short_stft_window_ms, params.short_stft_overlap, params.short_stft_nfft)
 
     ridge_f1, ridge_idx_f1 = _dynamic_programming_ridge(stft_freqs, stft_power, params.ridge_main_search_hz, params.ridge_jump_penalty_hz)
-    ridge_f2, ridge_idx_f2 = _dynamic_programming_ridge(stft_freqs, stft_power, params.ridge_h2_search_hz, params.ridge_jump_penalty_hz, prior_hz=2.0 * ridge_f1 if ridge_f1.size else None)
-    ridge_mask = build_ridge_mask(stft_freqs, ridge_f1, ridge_f2, params.ridge_relative_bandwidth)
+    ridge_f2, ridge_idx_f2 = _dynamic_programming_ridge(
+        stft_freqs, stft_power, params.ridge_h2_search_hz, params.ridge_jump_penalty_hz,
+    )
+    frame_energy = np.sum(stft_power, axis=0, dtype=np.float64)
+    active_frames = (ridge_f1 > 0.0) & (
+        frame_energy > params.ridge_valid_energy_ratio * float(np.median(frame_energy))
+    )
+    bin_hz = stft_freqs[1] - stft_freqs[0] if len(stft_freqs) > 1 else 1.0
+    harmonic_tolerance = np.maximum(
+        bin_hz, params.ridge_relative_bandwidth * np.maximum(ridge_f1, params.eps),
+    )
+    harmonic_frames = active_frames & (np.abs(ridge_f2 - 2.0 * ridge_f1) < harmonic_tolerance)
+    ridge_mask = build_ridge_mask(
+        stft_freqs, ridge_f1, ridge_f2, params.ridge_relative_bandwidth,
+        active_frames=active_frames, harmonic_frames=harmonic_frames,
+    )
     harmonic_complex = stft_complex * ridge_mask
     residual_complex = stft_complex * (1.0 - ridge_mask)
     residual_power = np.abs(np.asarray(residual_complex, dtype=np.complex128)) ** 2

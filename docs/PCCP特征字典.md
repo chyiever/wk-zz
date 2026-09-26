@@ -3,11 +3,11 @@
 本文档是 PCCP 断丝信号特征挖掘所用候选特征的完整字典表，包含公式、中英文名称、代码变量名与物理意义。
 代码实现见 `src/fea_cpt_gpu_v2_2/features.py`（`DATA09_v0-flow_feature_extraction.ipynb`、`DATA09_v0-qj` 样本特征提取等实际调用的版本），中文含义映射见 `src/pccp_feature_mining/feature_schema.py` 的 `BASE_FEATURE_MEANINGS`。
 
-> 条目说明：原表按 65 行计（`R_wp_*` 记为 1 行）。当前 schema `pccp-v6-band100k-no-snr-gate-wpt-auto-20260910` 已增加经典统计、熵、MFCC，并按**频带适用的特征族输出**；不再把全部特征机械复制到每个频带。3 dB 高频/二倍频二值可观测门限已删除，SNR 仅作描述性统计。WPT 分解层数按目标终端带宽自动推断，当前 8 带动态特征列数由 `feature_families_by_band` 和各带层数决定。
+> 条目说明：原表按 65 行计（`R_wp_*` 记为 1 行）。当前 schema `pccp-v7-bandaware-spectral-harmonic-multires-20260911` 按**频带适用的特征族输出**，并修复 `A_env` 漏列、带外补零污染谱统计、低频分辨率不足、低端谐波边界退化和 60–100 kHz 残差空掩模问题。3 dB 背景 SNR 二值门限仍保持删除，SNR 仅作描述性统计；二倍频是否进入谐波掩模由独立提取后的 2:1 频率关系决定。
 
 ## 符号约定
 
-- $x_B[n]$：当前规范带通信号（默认关注 100 Hz–100 kHz）；$X_B$：由同一 `STFT` 后端计算的复谱；$M_h\in\{0,1\}$：谐波脊线掩模；唯一残差定义为 $X_{\text{res}}=(1-M_h)X_B$、$x_{\text{res}}=\mathrm{ISTFT}(X_{\text{res}})$
+- $x_B[n]$：当前规范带通信号；$X_B$：由该频带所属分辨率组的同一 `STFT` 后端计算的复谱；$M_h\in\{0,1\}$：有效主脊线及通过 2:1 匹配的二倍频脊线掩模。唯一残差为 $X_{\text{res}}=(1-M_h)X_B$、$x_{\text{res}}=\mathrm{ISTFT}(X_{\text{res}})$。非谐波频带的 $M_h$ 只含本带有效主脊线，因此其 residual 表示“去除本带主导脊线后的局部残差”
 - $e[n]$：包络 $e[n]=|\mathrm{hilbert}(s[n])|$，$s[n]$ 取 $x_B,x_{H1},x_{H2}$ 或 $x_{\text{res}}$
 - $f_1(t)$：主脊线频率轨迹；$f_2(t)$：二倍频脊线频率轨迹
 - $P(t,f)$：STFT 功率谱；$E_B=\sum_{f\in B}P(t,f)$ 为频带能量
@@ -43,20 +43,20 @@
 | 21 | `G_gap` | 脊线间隙比 | Ridge Gap Ratio | $G_{\text{gap}}=\dfrac{N_{\text{gap}}}{L_{\text{all}}}$ | 间隙 = 脊线丢失帧 或 有效脊线相邻帧跳变 $>2$ 倍频率分辨率；衡量间断/跳变程度 |
 | 22 | `R2_ridge` | 脊线拟合优度 | Ridge R² Fit | $R^2(f_1,\hat f_1)$ | 主脊线二阶多项式拟合的确定系数 |
 | 23 | `S_arch` | 拱形轨迹分数 | Arch Trajectory Score | $S_{\text{arch}}=R^2\mathbf1(a<0)\mathbf1(t_v\in[0.2T,0.8T])$ | 频率轨迹是否呈先升后降的拱形 |
-| 24 | `H2_ratio` | 二倍频一致性比 | H2 Consistency Ratio | $H2_{\text{ratio}}=\dfrac{N\{\lvert f_2-2f_1\rvert<\Delta f\}}{N_{\text{active}}}$ | 二倍频与基频满足严格 2:1 关系的帧占比 |
-| 25 | `R_2_1` | 二倍频/基频能量比 | 2nd/1st Harmonic Ratio | $R_{2:1}=\dfrac{\sum_t E(t,2f_1\pm\Delta f)}{\sum_t E(t,f_1\pm\Delta f)}$ | 二倍频能量相对基频能量的强度，$\Delta f=\max(2\text{bin},0.08f_1)$ 相对带宽邻域积分 |
+| 24 | `H2_ratio` | 二倍频一致性比 | H2 Consistency Ratio | $H2_{\text{ratio}}=\dfrac{N\{\lvert f_2-2f_1\rvert<\Delta f_{match}\}}{N_{\text{active}}}$，$\Delta f_{match}=\max(1\text{bin},0.08f_1)$ | `f2` 不再以 `2f1` 为 DP 先验，而是独立提取后判断 2:1；无有效主脊线时返回 `NaN` |
+| 25 | `R_2_1` | 二倍频/基频能量比 | 2nd/1st Harmonic Ratio | $R_{2:1}=\dfrac{\sum_{t\in active\cap match} E(t,f_2\pm\Delta f)}{\sum_{t\in active}E(t,f_1\pm\Delta f)}$ | $\Delta f=\max(2\text{bin},0.08f)$；边界邻域截断积分而不整帧丢弃，基频不可积分时返回 `NaN` |
 | 26 | `H_stack` | 谐波栈能量比 | Harmonic Stack Ratio | $H_{\text{stack}}=\dfrac{\sum_t\sum_{m=1}^M E(t,mf_1\pm\Delta f)}{\sum_{t,f}P(t,f)}$ | 各阶谐波能量占全谱能量比例，测谐波组织度 |
-| 27 | `R_h` | 谐波能量占比 | Harmonic Energy Ratio | $R_h=\dfrac{E_{2nd,\pm1\text{kHz}}}{E_{1st,\pm1\text{kHz}}}$ | 二倍频相对基频的强度。实现取 $f_1/f_2$ 脊线固定 $\pm1$ kHz 邻域带积分，与 `R_2_1`（相对带宽 $\pm0.08f_1$）互补，非重复列 |
+| 27 | `R_h` | 谐波能量占比 | Harmonic Energy Ratio | $R_h=\dfrac{E_{2nd,\pm1\text{kHz},active\cap match}}{E_{1st,\pm1\text{kHz},active}}$ | 固定 ±1 kHz 邻域采用边界截断积分；基频不可积分时返回 `NaN`，与相对带宽 `R_2_1` 互补 |
 | 28 | `epsilon_2x` | 二倍频一致性误差 | H2 Consistency Error | $\varepsilon_{2\times}=\mathrm{median}\!\left(\dfrac{\lvert f_2-2f_1\rvert}{f_1}\right)$ | 二倍频轨迹偏离 2:1 关系的相对误差中位数 |
 | 29 | `C_h` | 谐波一致性水平 | Harmonic Consistency Level | $C_h=\mathrm{mean}(\lvert f_2-2f_1\rvert)$ | 二倍频与基频间距的绝对均值，越小谐波关系越严格 |
-| 30 | `R_harm` | 谐波能量占比 | Ridge Harmonic Energy | $R_{\text{harm}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ | 谐波脊线能量占总能量的比例 |
+| 30 | `R_harm` | 谐波能量占比 | Ridge Harmonic Energy | $R_{\text{harm}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ | 掩模仅包含有效帧主脊线和通过 2:1 匹配的二倍频脊线，避免低频主体被整片误认成谐波 |
 | 31 | `Ridge_coh` | 脊线相干度（已停用） | Ridge Coherence (deprecated alias) | $Ridge_{\text{coh}}=\dfrac{E_{\text{ridge}}}{E_{\text{total}}}$ | **代码层面与 `R_harm` 完全同值的别名列，已停用**（不参与模型选择）；如不需要兼容请直接忽略该列 |
-| 32 | `rho_up` | 脊线上升率 | Ridge Up-Rate | $\rho_{up}=\dfrac{N\{df_1/dt>\tau_s\}}{N_{\text{active}}}$ | 主脊线频率上扫活跃程度 |
-| 33 | `rho_down` | 脊线下降率 | Ridge Down-Rate | $\rho_{down}=\dfrac{N\{df_1/dt<-\tau_s\}}{N_{\text{active}}}$ | 主脊线频率下扫活跃程度 |
+| 32 | `rho_up` | 脊线上升率 | Ridge Up-Rate | $\rho_{up}=\dfrac{N\{(df_1/dt)_{pair}>\tau_s\}}{N_{\text{valid pair}}}$ | 仅统计相邻两帧均有效的斜率对；$\tau_s=2\times10^6$ Hz/s，与 DP 的 Hz 跳变惩罚分离 |
+| 33 | `rho_down` | 脊线下降率 | Ridge Down-Rate | $\rho_{down}=\dfrac{N\{(df_1/dt)_{pair}<-\tau_s\}}{N_{\text{valid pair}}}$ | 仅统计相邻两帧均有效的斜率对；分母不是单帧 `N_active` |
 | 34 | `N_turn` | 脊线转向次数 | Ridge Turn Count | $N_{\text{turn}}=N\{\mathrm{sign}(df_1/dt)\ \text{变化}\}$ | 频率轨迹斜率变号次数；实现先剔除零斜率样本再统计，避免 `+→0→−` 重复计数 |
 | 35 | `Delta_f_span` | 频率跨度 | Frequency Span | $\Delta f_{\text{span}}=\max(f_1)-\min(f_1)$ | 主脊线频率摆动覆盖范围 |
 | 36 | `C_f` | 归一化频率曲率 | Normalized Frequency Curvature | $C_f=\dfrac{\mathrm{mean}\left(\left\lvert\dfrac{d^2f_1}{dt^2}\right\rvert\right)}{\mathrm{mean}\lvert f_1\rvert}$ | 主频轨迹的弯折程度，除以平均主频做**相对曲率**归一化，跨频带可比 |
-| 37 | `E_harm` | 谐波能量 | Harmonic Energy | $E_{\text{harm}}=\sum M_hP$ | 谐波脊线掩模下的绝对能量 |
+| 37 | `E_harm` | 谐波能量 | Harmonic Energy | $E_{\text{harm}}=\sum M_hP$ | 当前 30 ms 窗统一 MAD 标度后的谐波能量；不是传感器原始物理量纲的绝对能量 |
 | 38 | `E_res` | 残差能量 | Residual Energy | $E_{\text{res}}=\sum\lvert(1-M_h)X_B\rvert^2$ | 当前主频带范围内、谐波模型未解释的能量；与 `E_total`、`E_harm` 使用同一复谱和频率范围 |
 | 39 | `rho_res` | 残差能量占比 | Residual Energy Ratio | $\rho_{\text{res}}=\dfrac{E_{\text{res}}}{E_{\text{total}}}$ | 未能被模型解释的能量占比，异常程度指标 |
 | 40 | `R_high_res` | 高频残差占比 | High-freq Residual Ratio | $R_{\text{high,res}}=\dfrac{E_{\text{res,high}}}{E_{\text{total}}}$ | 高频带内残差能量占总能量比例 |
@@ -104,11 +104,11 @@
 | 排列熵 | `permutation_entropy`、`MPE_scale2`、`MPE_scale3` | Bandt–Pompe 三阶排列熵及时间粗粒化尺度 2、3；归一化到 0–1 |
 | 奇异谱熵 | `singular_spectrum_entropy` | 对限长 Hankel 轨迹矩阵的奇异值平方归一化后计算 Shannon 熵，并归一化到 0–1 |
 | 频谱延展度 | `spectral_spread` | $sqrt{\sum_{f,t}(f-SC)^2P(f,t)/\sum_{f,t}P(f,t)}$ |
-| 功率谱熵 | `power_spectral_entropy` | 对时间平均功率谱归一化后计算 Shannon 熵，并除以 $\log K$ |
+| 功率谱熵 | `power_spectral_entropy` | 只对当前频带内 $K_B$ 个有效频点归一化并计算 Shannon 熵，再除以 $\log K_B$；频带外补零点不参与 |
 | 分解能量熵 | `energy_entropy` | 将时域窗口等分为 8 段，对各段能量归一化后计算 Shannon 熵，并除以 $\log 8$；它与 WPT 熵是不同分解域 |
-| 梅尔倒谱 | `MFCC_01`–`MFCC_13` | 当前带 STFT 平均功率经 26 个 Mel 三角滤波器、对数压缩和正交 DCT 得到 13 个系数 |
+| 梅尔倒谱 | `MFCC_01`–`MFCC_13` | 当前带 STFT 平均功率经 26 个 Mel 三角滤波器、对数压缩和正交 DCT 得到 13 个系数；1–5/5–15 kHz 使用长窗分辨率组，避免多数 Mel 滤波器为空 |
 
-这些增补特征通过 `classic`、`entropy`、`cepstral` 特征族选择输出。100 Hz–1 kHz 当前仍只输出 `classic/time/background`；该带的谱熵、MFCC 和频谱延展度应在长窗/低采样率多分辨率路径上线后再启用。
+这些增补特征通过 `classic`、`entropy`、`cepstral` 特征族选择输出。100 Hz–1 kHz 仍只输出 `classic/time/background`；代码已为该带准备 8.192 ms 分辨率参数，但在完成物理验证前不启用谱熵、MFCC 和脊线族。
 
 ## 补充说明
 
@@ -116,25 +116,37 @@
 CSV 列名仍采用 `b_<band>__<base>`，但特征按物理适用的族选择，不再在每个频带上全部重复。例如：
 
 - `b_100_100k` 是明确的宽带谐波上下文，可输出 harmonic/wavelet/damped 等完整族；
-- `b_100_1k` 主要输出 time/spectral/background；
+- `b_100_1k` 只输出 classic/time/background；
 - `b_5k_15k` 主要输出 time/spectral/ridge/background；
-- `b_30k_60k` 输出 time/spectral/residual/background，并通过高频可观测门限解释衰减量。
+- `b_30k_60k` 输出 classic/time/spectral/entropy/cepstral/residual/background；背景 SNR 只作描述性质量统计。
 
 当前 DATA09 正式频带为 `b_100_100k`、`b_1k_100k`、`b_100_1k`、`b_1k_5k`、`b_5k_15k`、`b_15k_30k`、`b_30k_60k`、`b_60k_100k`；预处理先对整段信号去均值，再执行 100 Hz 高通，并以 105 kHz 低通提供 100 kHz 通带的过渡余量。
 
-`b_<band>` 前缀决定该频带内的子带参数：`sliding_window.build_params_for_band()` 按主带跨度分数生成 `low/mid/high1/high2/harmonic` 子带（低频 $0.30\times$、中频 $0.30$–$0.60\times$、高频 $0.50$–$0.80\times$、高频带 $0.60\times$–上限、谐波带 $0.50\times$–上限），主脊线搜索 $0$–$0.65\times$ 跨度。因此同名基础特征在不同频带前缀下的高/低频含义不同，比较时须带上前缀。
-频带划分的常量定义见 `src/fea_cpt_gpu_v2_2/params.py` 的 `LOW/MID/HIGH1/HIGH2/HARMONIC_BAND_HZ`，中文展示见 `feature_schema.py:band_chinese_label()`。
+`b_<band>` 前缀决定该频带内的子带参数：`sliding_window.build_params_for_band()` 按主带跨度分数生成 `low/mid/high1/high2/harmonic` 子带（低频 $0.30\times$、中频 $0.30$–$0.60\times$、高频 $0.50$–$0.80\times$、高频带 $0.60\times$–上限、谐波带 $0.50\times$–上限）。非谐波频带的本地主脊线搜索为前 65% 跨度；100 Hz–100 kHz 谐波上下文固定搜索 $f_1\in[5,50]$ kHz、独立搜索 $f_2\in[10,100]$ kHz。因此同名基础特征在不同频带前缀下的高/低频含义不同，比较时须带上前缀。
+动态比例和脊线范围的最终定义在 `sliding_window.build_params_for_band()`；`params.py` 中的固定频带是通用默认值，会在滑窗流水线中被覆盖。中文展示见 `feature_schema.py:band_chinese_label()`。
+
+### 多分辨率 STFT 组（1 MHz 输入）
+
+| 频带组 | 标准 STFT | 标准频率分辨率 | 短 STFT | 用途 |
+|---|---:|---:|---:|---|
+| 100 Hz–100 kHz 谐波上下文 | 2.048 ms / 2048 点 | 488.28125 Hz | 0.32 ms / 512 点 | 提高 2:1 匹配分辨率，同时保留瞬态短谱 |
+| 上限 ≤5 kHz | 8.192 ms / 8192 点 | 122.0703125 Hz | 4.096 ms / 4096 点 | 1–5 kHz MFCC、谱熵和脊线；100 Hz–1 kHz 谱族暂不输出 |
+| 上限 5–15 kHz | 4.096 ms / 4096 点 | 244.140625 Hz | 2.048 ms / 2048 点 | 5–15 kHz 谱形、MFCC和脊线 |
+| 其余频带 | 0.64 ms / 1024 点 | 976.5625 Hz | 0.32 ms / 512 点 | 中高频瞬态与残差 |
+
+GPU/共享路径按 `(window_ms, overlap, nfft, short_window_ms, short_overlap, short_nfft)` 分组批量计算，各组保留独立频率轴和时间轴，不再假设所有频带张量形状一致。
 
 ### 实现口径补充说明（与代码对齐）
-- `rho_r` 及 `H2_ratio`、`epsilon_2x`、`C_h`、`rho_up/down` 的 $N_{\text{active}}$ 分母共用**帧有效性判据**（主带帧能量 $>0.2\times$ 帧能量中位数）。
-- `beta_H`、`alpha_hat` 为**峰后窗拟合**（$t\in[t_p,t_{off}]$），避免全窗拟合混入能量上升段；高频不可观测时衰减量返回 `NaN`。
-- `STFT/ISTFT` 必须成对使用同一库与完全一致的窗、步长、中心化及长度约定；Torch 批量前向在主进程集中执行，worker 使用 Torch CPU 逆变换，避免多进程争用 CUDA 上下文。
+- `rho_r` 及 `H2_ratio`、`epsilon_2x`、`C_h` 共用**帧有效性判据**（主带帧能量 $>0.2\times$ 帧能量中位数）；`rho_up/down` 进一步只使用相邻两帧均有效的斜率对。
+- `beta_H`、`alpha_hat` 为**峰后窗拟合**（$t\in[t_p,t_{off}]$）；拟合点不足时返回 `NaN`，不再回退全窗。
+- `STFT/ISTFT` 必须成对使用同一库与完全一致的窗、步长、中心化及长度约定；Torch 批量前向仅在主进程集中执行，worker 进程强制 `FEA_CPT_USE_GPU=0` 且 Torch 延迟导入，避免每个 Windows worker 探测/初始化 CUDA。
 - `E_total`、`E_harm`、`E_res` 统一取当前规范带通信号的同一 STFT 频率范围，并用 `float64` 累加；唯一残差为 `ISTFT((1-M_h)X_B)`。
 - WPT 分解层数不再固定为四层：按有效采样率和目标终端子带宽自动选择（默认约 8 kHz，限制 2–8 层），节点中心频率依据 `order="freq"` 返回位置而非 `a/d` 路径二进制直译。
 - 阻尼原子以事件起点/残差峰值为候选 $t_0$，并同时投影正弦、余弦基以消除起点和相位偏置。
 - `F_peak` 按**逐频点正增量（半波整流）再求和**计算，首帧通量置 0。
 - `T_half_high` 为**峰后衰减时长**，峰后从未跌破 50% 时返回 `NaN`。
-- `R_2_1`、`H_stack` 采用脊线 $\pm\Delta f$（$\Delta f=\max(2\text{bin},0.08f_1)$）带内积分；`R_h` 采用 $f_1/f_2$ 固定 $\pm1$ kHz 邻域积分（超出频率轴范围的帧跳过），二者互补而非重复。
+- `H2_ratio` 的匹配容差为 $\max(1\text{bin},0.08f_1)$；`R_2_1`、`H_stack` 的积分半宽为 $\max(2\text{bin},0.08f)$。`R_h` 使用固定 ±1 kHz。越过频率轴边界时截断邻域，不再丢弃整帧；二倍频分子只累计 2:1 匹配帧。
+- `SF`、`H_tf`、`H_alpha`、`spectral_spread` 和 `power_spectral_entropy` 只读取当前物理频带内频点；其中谱熵按带内有效频点数归一化，频带外补零不参与。
 - `Ridge_coh` 为 `R_harm` 的**同值别名列（已停用）**。
 - `Sk_env`、`K_loc`、`K_res_max` 等矩量采用无偏估计；`R_td` 的边界用 5%/95% 累积能量分位点。
 - `eta_dict` 为波形 L1 占比（谐波重构 vs 损伤分量），非稀疏字典系数比。
@@ -155,6 +167,13 @@ CSV 列名仍采用 `b_<band>__<base>`，但特征按物理适用的族选择，
 
 | 日期 | 修改内容 | 原（修改前） | 现（修改后） |
 |---|---|---|---|
+| 2026-09-11 | Windows/Jupyter 运行稳定性 | Notebook 实际启用 14 workers，worker 导入 Torch 并可争用 CUDA，同时预加载下一份 96 MB 文件 | 稳定配置降为 2 workers/20 窗 STFT batch；worker 强制 CPU、Torch 延迟导入、关闭整文件预加载和默认全文件 smoke test |
+| 2026-09-11 | schema v7 与字典完整性 | `A_env` 虽计算但被特征族过滤；v6 共 570 列 | `A_env` 加回 `time`；8 带共 578 列，`Ridge_coh` 仍为明确停用别名 |
+| 2026-09-11 | 带内谱统计 | `SF` 与谱熵把完整 513-bin 轴的带外补零纳入口径 | 所有谱统计只使用当前带内频点，谱熵除以 $\log K_B$ |
+| 2026-09-11 | 低频多分辨率 | 1–5 kHz 仅 4 个标准 bin、2 个短谱 bin | 1–5 kHz 改为 122.07 Hz/bin，5–15 kHz 改为 244.14 Hz/bin；GPU 按参数组 batch |
+| 2026-09-11 | 谐波与边界 | `f1` 可落首个低频 bin；`f2` 带 2f1 先验；两 bin 容差和越界整帧跳过造成自证与比值爆炸 | `f1` 限 5–50 kHz，`f2` 独立提取；一 bin 匹配容差；邻域截断积分；只有匹配 `f2` 进入掩模 |
+| 2026-09-11 | 高频局部残差 | 60–100 kHz 主脊线范围退化为 60,000–60,001 Hz，`rho_res≈1` | 非谐波频带按本带前 65% 搜索主脊线，60–100 kHz 可形成有效局部残差 |
+| 2026-09-11 | 衰减/斜率口径 | `beta_H` 峰后不足时回退全窗；`rho_up/down` 用 Hz 参数比较 Hz/s | `beta_H` 拟合不足返回 NaN；新增独立 `ridge_slope_threshold_hz_per_s`，分母改为有效帧对 |
 | 2026-09-10 | 模块路径更正 | `src/fea_cpt_gpu_v2/` | `src/fea_cpt_gpu_v2_2/`（`DATA09_v0-flow_*` 等实际调用版本） |
 | 2026-09-10 | #11 `eta_bw` 名称 | 有效带宽比 | 包络左右宽度比（时域量，与频率带宽无关） |
 | 2026-09-10 | #16/#62 `beta_H`、`alpha_hat` 拟合区间 | 全窗拟合（未限定区间） | 峰后窗拟合 $t\in[t_p,t_{off}]$，避免上升段污染衰减斜率 |
